@@ -138,6 +138,7 @@ class EvalRecord:
     tokens_out: int
     raw_output: str
     error: Optional[str] = None
+    options: dict[str, str] = field(default_factory=dict)  # {"A": "...", ...}; the choices shown, for a full replay kept they are. Empty for open / old logs, it is.
 
     @staticmethod
     def now() -> float:

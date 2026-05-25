@@ -106,6 +106,7 @@ def _build_record(
         tokens_out=pred.tokens_out,
         raw_output=pred.raw_output,
         error=pred.error,
+        options=question.options,   # The choices shown, logged for a full replay they are (the letter the model picked, by its text we can read).
     )
 
 
