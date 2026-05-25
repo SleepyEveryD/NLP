@@ -9,12 +9,63 @@ Polite we stay: rapid consecutive games/requests, avoid them we do.
 """
 from __future__ import annotations
 
+import re
 from typing import Callable, Optional
 
 from schemas import Question, QuestionType
 
 # The option letters, in order these are (their server gives integer ids, not letters).
 _LETTERS = "ABCDEFGH"
+
+# A single "A) text" / "B. text" / "C: text" option line, this matches (the leading letter + its text).
+_OPT_LINE = re.compile(r"^\s*([A-Za-z])\s*[).:\-]\s*(.+?)\s*$")
+
+
+def _norm(s: str) -> str:
+    # For comparison only: lowercased, whitespace collapsed, a trailing period dropped.
+    return re.sub(r"\s+", " ", s.strip().lower()).rstrip(".")
+
+
+def strip_embedded_options(text: str, option_texts: list[str]) -> str:
+    """A trailing 'A) ... B) ...' block, baked into the question text it sometimes is -- remove it we do.
+
+    The danger (qid 617): the server's option ORDER differs from the text's embedded letters, so two
+    conflicting A/B/C/D schemes the model would see. Strip the block we do -- but ONLY when its texts
+    truly duplicate the server options (a subset match) AND the letters run A, B, C, ... in order.
+    A question that merely mentions a letter, never mangle we will. Lossless this is -- the options,
+    in EvalRecord.options preserved they already are.
+    """
+    if not text or not option_texts:
+        return text
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():  # Trailing blank lines, first drop them we do.
+        lines.pop()
+
+    letters: list[str] = []
+    texts: list[str] = []
+    n = len(lines)
+    while n > 0:  # From the bottom up, the contiguous run of option-shaped lines we gather.
+        m = _OPT_LINE.match(lines[n - 1])
+        if not m:
+            break
+        letters.append(m.group(1).upper())
+        texts.append(m.group(2))
+        n -= 1
+    letters.reverse()
+    texts.reverse()
+
+    if len(texts) < 2:  # Too short to be an options block, it is.
+        return text
+    # Consecutive A, B, C, ... the letters must be -- else a real list this may be, untouched leave it.
+    if letters != [chr(ord("A") + i) for i in range(len(letters))]:
+        return text
+    # And a subset of the server options the texts must be -- only a true duplicate, strip we do.
+    server = {_norm(t) for t in option_texts}
+    if not {_norm(t) for t in texts} <= server:
+        return text
+
+    cleaned = "\n".join(lines[:n]).rstrip()
+    return cleaned or text  # All text was the block? Then keep the original, defensive we stay.
 
 
 def adapt_question(api_q) -> Question:
@@ -28,9 +79,11 @@ def adapt_question(api_q) -> Question:
         letter = _LETTERS[i]
         options[letter] = opt.text
         option_ids[letter] = opt.id
+    # A duplicated options block baked into the text, strip it we do -- the double-lettering, gone (qid 617).
+    text = strip_embedded_options(api_q.text or "", list(options.values()))
     return Question(
         qid=str(api_q.id),
-        text=api_q.text or "",
+        text=text,
         options=options,
         option_ids=option_ids,
         qtype=QuestionType.MCQ,
