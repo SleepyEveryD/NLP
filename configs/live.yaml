@@ -4,7 +4,7 @@
 run_id: "live"
 seed: 13
 latency_budget_s: 30.0          # The hard wall of the game, this is.
-prompt_strategy: "zero_shot_v1"
+prompt_strategy: "few_shot_v1"  # Offline's best (0.869565), this strategy was -- so the real game with it, not zero-shot, we face.
 
 mode: "live"                    # The REAL test -- the game API drives the loop, correct comes post-submit.
 
