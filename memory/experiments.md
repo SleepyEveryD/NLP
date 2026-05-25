@@ -99,3 +99,31 @@ Required fields per run (the rubric): **model · prompt · latency · accuracy �
 
 ## Leaderboard runs (live game)
 _(track each official run here: date, config used, final prize/level reached, observations)_
+
+### live_comp0..5 — first ALL-competitions live sweep (few_shot + calculator)
+- Date / commit:         2026-05-25 · branch `phase-3`
+- Model:                 Qwen/Qwen2.5-7B-Instruct, 4-bit nf4
+- Prompt strategy:       few_shot_v1
+- Retrieval:             off
+- Tools:                 calculator (`default_tools`; Phase 3 — auto-fires on Maths only)
+- Mode:                  LIVE (text), one game per competition (0–5), via `run_all_competitions` sweep
+- Accuracy:              **overall 86.7% (39/45)** — tracks the offline 87% closely
+  - per competition: Philosophy **1.00 (15/15)** · Entertainment 0.88 (15/17) · Ancient History 0.80 (4/5) ·
+    Maths 0.75 (3/4) · Science 0.50 (1/2) · News 0.50 (1/2)   [Science/News tiny-N]
+  - reached_level = 0 for ALL; "answered" count varies a lot (Ent 17 vs Sci/News 2). GAME-MECHANIC
+    UNRESOLVED: a wrong answer seems to END some games (Sci/News/Maths/Hist each stopped right after their
+    lone wrong) yet Entertainment continued past 2 wrongs to 17. Investigate the level/termination contract.
+- Latency:               all turns ~0.8–1.8s (≪ 30s; 0 violations) — the sweep reconfirms latency is a non-issue
+- Notes / failure modes (6 wrong, saved to `experiments/wrong_questions.jsonl`) — THREE buckets:
+  - **Pure recall** → Phase-4 RAG: qid 140 (Johnny Cash crossover, arguably ambiguous A vs B); 1232 (Roman
+    tunica recta); 772 (M3GAN — picked the generic "self-preservation" AI trope over the film-specific
+    "emotional attachment").
+  - **Reasoning/set-up errors the model SHOULD get** → CoT candidate (parser now fixed, so cot parses):
+    - 4902 (Science method): to repeat a freezing experiment you need "volume of water" (C); model picked
+      "temperature of the ice" (A).
+    - 6854 (Maths): paint ∝ surface area, gold 13/2; model picked 13 (=√169, dropped the proportionality
+      constant). NOTE: the calculator CANNOT save a wrong set-up — only CoT-style reasoning can.
+  - **Beyond knowledge cutoff** → RAG-only: 11239 (News, assassination on 2026-05-17; model cutoff Jan-2026
+    cannot know it). Confirms News = the canonical RAG competition.
+- Pipeline status: end-to-end LIVE works — few_shot + calculator + parser fix + options logging + 6-comp sweep.
+- NEXT: (B) settle strategy (re-parse / re-run for true cot numbers; cot may lift 4902/6854) → then (A) RAG (Phase 4).
