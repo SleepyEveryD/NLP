@@ -21,6 +21,13 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
 ## Phase 0 — Scaffolding & environment  ◐
 - ☑ Repo structure, module interfaces, memory system (Session 01).
 - ☑ Game API resolved + `GameClient` adapter written (D-014).
+- ☑ **Two run modes** (D-015): `schemas.RunMode {OFFLINE,LIVE}`, `RunConfig.mode/dataset_path/game`,
+  `runner.LiveRunner` + `run_session()` dispatcher; `configs/live.yaml`. Both modes log identical
+  `EvalRecord` JSONL.
+- ☑ `notebooks/03_live_play.ipynb` written (clone+`millionaire_client` on path → load → wire → login →
+  `run_session(..., game_client=...)` → results). Creds via Colab secret `poli-millionaire` (B3, never hardcoded).
+  ◐ AWAITING first REAL Colab run — confirm option ids / `time_remaining` per the Phase-0 smoke note before
+  burning the timer; set `USERNAME` + the competition_id first.
 - ☐ `notebooks/00_setup_colab.ipynb`: mount Drive, `sys.path` (repo `src` + `millionaire_client`),
   `pip install -r requirements.txt`, load Qwen2.5-7B 4-bit, `warmup()`, one smoke-test generation, print latency.
 - ◐ Smoke-test the real client: login → `list_competitions()` ☑ DONE 2026-05-25 (Colab; auth OK, 6
@@ -40,13 +47,24 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
   (`load_runs`/`accuracy_by`/`latency_summary`).
 - ☑ Dev question set: `data/dev_questions.jsonl` (23 Qs, ~4/topic across the 6 comps, gold-verified;
   News uses STABLE recent-historical facts) + loader `src/evaluation/dataset.py::load_questions`.
-- ☑ `notebooks/01_baseline_qa.ipynb` written (auto-locates repo on Drive via `src/schemas.py` marker;
-  load→warmup→demo→benchmark→accuracy/latency plots). ☐ RUN it on a T4 → record numbers in `experiments.md`.
+- ☑ `notebooks/01_baseline_qa.ipynb` (now git-clone workflow: clones `SleepyEveryD/NLP`, no Drive;
+  load→warmup→demo→benchmark→accuracy/latency plots).
+- ☑ RAN on Colab 2026-05-25 → **87.0% (20/23)**, latency median 0.91s (0 budget violations). Logged in
+  `experiments.md`. Weak spots: Maths 0.50, Science 0.75. ☐ NEXT: inspect the 3 misses (failure modes +
+  overconfidence) — user chose this before picking Phase 2 vs Phase 3.
 
-## Phase 2 — Prompt engineering  ☐
-- ☐ Add strategies: `few_shot_v1`, `cot_v1` ("think briefly, then answer"), `concise_v1`.
-- ☐ Difficulty-adaptive prompting experiment (simple vs harder rungs).
-- ☐ Prompt-sensitivity study across ≥2 models. → `experiments.md`, `prompts.md`.
+## Phase 2 — Prompt engineering  ◐  (code DONE 2026-05-25; awaiting Colab run)
+- ☑ Add strategies `few_shot_v1` (3 exemplars, no dev-set leakage) + `cot_v1` ("think briefly → Answer: X")
+  to `PromptBuilder` registry + `_render_mcq` helper. Documented in `prompts.md`.
+- ☑ `notebooks/02_prompt_engineering.ipynb`: loads model ONCE, benchmarks all 3 strategies on the dev set,
+  compares overall + topic×strategy + **Maths-in-focus** + latency/tokens. ☑ RAN + recorded (run `prompt_eng`).
+- ⊘ KEY read-off SUSPENDED: the cot 61% was a PARSER BUG (parse_answer `_EXPLICIT` regex can't match
+  "Answer:", falls to pattern-7 which grabs the article "a"→"A"). cot's reasoning is mostly CORRECT and it
+  even solved 17×13 & 2^10. Re-judge "does CoT fix maths / best prompt" AFTER a parser fix + re-parse.
+- 🔴 [P2-bug] FIX `parse_answer` then RE-PARSE saved records.jsonl (no model re-run) → true zero/few/cot
+  numbers. Latent landmine for RAG/tool prose paths → do this BEFORE Phase 3. Details: experiments.md CORRECTION.
+- ☐ `concise_v1` + difficulty-adaptive prompting experiment (simple vs harder rungs). (backlog)
+- ☐ Prompt-sensitivity study across ≥2 models. → `experiments.md`, `prompts.md`. (later, with model pool)
 
 ## Phase 3 — Tools (calculator)  ☐
 - ☐ `QuestionClassifier.needs_calculator` (regex/number heuristics).

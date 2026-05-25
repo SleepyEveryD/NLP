@@ -18,6 +18,50 @@ class QuestionType(str, Enum):
     UNKNOWN = "unknown"
 
 
+# Friendly aliases, so the notebook need not memorise the canonical words.
+# Module-level frozensets these are -- inside a str-Enum, plain-set attributes
+# misread as members would be, so out here they live.
+_OFFLINE_ALIASES = frozenset({"offline", "test", "dev", "our", "ours", "own", "local", "our_test", "our test", "our own test"})
+_LIVE_ALIASES = frozenset({"live", "real", "game", "online", "server", "real_test", "real test", "realtest"})
+
+
+class RunMode(str, Enum):
+    """The two ways a run can be driven, these are.
+
+    OFFLINE -- our OWN test: the hand-crafted dev set, where the gold is known and
+    accuracy locally computed it is.
+    LIVE    -- the REAL test: the actual game API, where the truth only after submitting
+    revealed it is (correct from AnswerResult comes).
+    """
+    OFFLINE = "offline"  # our own dev-set test (gold known up front).
+    LIVE = "live"        # the real game (gold known only post-submit).
+
+    @classmethod
+    def normalize(cls, value) -> "RunMode":
+        """A loose string ('our own test', 'real') into a canonical RunMode, this turns.
+
+        Already a RunMode it may be -- then untouched it passes. Unknown it is -- loudly we fail.
+        """
+        # Already canonical, the value is -- return it unchanged we do.
+        if isinstance(value, cls):
+            return value
+        key = str(value).strip().lower()
+        # The exact-alias sets, first we consult.
+        if key in _OFFLINE_ALIASES:
+            return cls.OFFLINE
+        if key in _LIVE_ALIASES:
+            return cls.LIVE
+        # A keyword fallback -- "real"/"live"/"game" beat "test", so "real test" → LIVE it is.
+        if any(w in key for w in ("real", "live", "game", "online", "server")):
+            return cls.LIVE
+        if any(w in key for w in ("our", "offline", "dev")) or "test" in key:
+            return cls.OFFLINE
+        # Neither matched -- a clear error, raise we must.
+        raise ValueError(
+            f"Unknown run mode {value!r}. Use 'offline' (our own test) or 'live' (real test)."
+        )
+
+
 @dataclass
 class Question:
     """A single quiz question, as received from the game or a dev set.
@@ -94,6 +138,7 @@ class EvalRecord:
     tokens_out: int
     raw_output: str
     error: Optional[str] = None
+    options: dict[str, str] = field(default_factory=dict)  # {"A": "...", ...}; the choices shown, for a full replay kept they are. Empty for open / old logs, it is.
 
     @staticmethod
     def now() -> float:
