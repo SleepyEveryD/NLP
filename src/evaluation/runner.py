@@ -12,8 +12,10 @@ One run = one config; the config itself, into meta.json we write.
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import subprocess
+import time
 from typing import Optional
 
 from agent.pipeline import QAPipeline
@@ -266,3 +268,45 @@ def run_session(
             "(see src/game/client.py::GameClient). Offline you wanted? Set config.mode='offline'."
         )
     return LiveRunner(pipeline, config, game_client, log_root=log_root).run()
+
+
+def run_all_competitions(
+    pipeline: QAPipeline,
+    config: RunConfig,
+    game_client,
+    *,
+    competition_ids=(0, 1, 2, 3, 4, 5),
+    log_root: str = "experiments/runs",
+    pause_s: float = 8.0,
+    on_competition=None,
+) -> list[tuple[int, Optional[str]]]:
+    """All six competitions, one LIVE game each, in sequence play -- the whole sweep, this is.
+
+    Each competition its OWN run dir gets (run_id `live_comp{id}`), so `metrics.load_runs` per-competition
+    reads them. The caller's `config` we never mutate -- a deep copy per game, with `mode='live'` + the
+    competition id set, we drive.
+
+    Polite to the proof-of-concept server we stay (the assignment asks it): `pause_s` seconds BETWEEN games
+    we sleep. Resilient too -- one competition's failure (a RateLimitError, say) the rest it never sinks;
+    `(id, None)` for the failed one we record, and onward we go.
+
+    Returns: a list of `(competition_id, run_path-or-None)`, in play order.
+    """
+    ids = list(competition_ids)
+    results: list[tuple[int, Optional[str]]] = []
+    for i, cid in enumerate(ids):
+        cfg = copy.deepcopy(config)         # The caller's config, untouched it stays.
+        cfg.mode = "live"
+        cfg.game.competition_id = cid
+        cfg.run_id = f"live_comp{cid}"
+        if on_competition:
+            on_competition(cid)
+        try:
+            run_path = LiveRunner(pipeline, cfg, game_client, log_root=log_root).run()
+            results.append((cid, run_path))
+        except Exception as e:  # One game falls -- the sweep survives, the failure we note.
+            print(f"  [comp {cid}] FAILED -- {type(e).__name__}: {e}")
+            results.append((cid, None))
+        if pause_s and i < len(ids) - 1:    # Between games (not after the last), polite we pause.
+            time.sleep(pause_s)
+    return results
