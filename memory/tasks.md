@@ -70,10 +70,15 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
 - ☐ `concise_v1` + difficulty-adaptive prompting experiment (simple vs harder rungs). (backlog)
 - ☐ Prompt-sensitivity study across ≥2 models. → `experiments.md`, `prompts.md`. (later, with model pool)
 
-## Phase 3 — Tools (calculator)  ☐
-- ☐ `QuestionClassifier.needs_calculator` (regex/number heuristics).
-- ☐ Tool-call loop in pipeline (detect → call `calculate()` → feed result → re-answer).
-- ☐ Ablation: maths-question accuracy with vs without calculator. → `experiments.md`.
+## Phase 3 — Tools (calculator)  ◐  (code DONE 2026-05-25; ablation awaits a Colab run)
+- ☑ `QuestionClassifier.needs_calculator` (regex/number heuristics) — already present; verified True on
+  "17 * 13", False on non-maths.
+- ☑ Tool-call loop in pipeline (D-013 JSON single-turn): `QAPipeline._run_calculator_tool` + `tools.default_tools()`
+  (`{"calculator": calculate}`). Model emits `{"name","arguments":{"expression"}}` JSON → safe-AST `calculate()`
+  → result fed back → re-answer for the letter. Crash-safe (bad JSON / forbidden expr / calc error → the plain
+  answer stands); skipped when <4s budget left. `_extract_first_json` brace-counts (tolerates chatter). 6
+  mock-engine tests pass (no GPU). Live notebook 03 now wires `tools=default_tools()` (a no-op off the maths comp).
+- ☐ Ablation: maths-question accuracy with vs without calculator (toggle `tools=` in a benchmark on Colab). → `experiments.md`.
 
 ## Phase 4 — RAG (raw evidence only)  ☐
 - ☐ Build/clean a corpus (Wikipedia/PDF/HTML) OR pick a free raw-content search API (name it in video).
