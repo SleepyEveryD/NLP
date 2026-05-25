@@ -10,8 +10,10 @@ experiments/runs/*
 !experiments/runs/.gitkeep
 
 # Data (corpus, dev sets, model caches)
+# NOTE: the hand-checked offline dev set is force-tracked below (the notebook needs it on a fresh clone).
 data/*
 !data/.gitkeep
+!data/dev_questions.jsonl
 *.faiss
 *.index
 
