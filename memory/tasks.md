@@ -80,11 +80,24 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
   mock-engine tests pass (no GPU). Live notebook 03 now wires `tools=default_tools()` (a no-op off the maths comp).
 - ☐ Ablation: maths-question accuracy with vs without calculator (toggle `tools=` in a benchmark on Colab). → `experiments.md`.
 
-## Phase 4 — RAG (raw evidence only)  ☐
-- ☐ Build/clean a corpus (Wikipedia/PDF/HTML) OR pick a free raw-content search API (name it in video).
-- ☐ `Retriever` with multilingual-e5 + FAISS; chunking strategy.
-- ☐ `needs_retrieval` gating + context injection in `PromptBuilder`.
-- ☐ Ablation: accuracy with vs without RAG, latency impact. → `experiments.md`.
+## Phase 4 — RAG (raw evidence only)  ◐  (code DONE 2026-05-26 on `phase-3`; ablation awaits a Colab run)
+- ☑ Data source: **live Wikipedia Action API** (free, RAW extracts → rule-compliant; NAME IT IN THE VIDEO).
+  Chosen over a local FAISS corpus (no index to build) and over generic web search (HTML parsing/latency).
+- ☑ `WikipediaRetriever` (`src/retrieval/wikipedia.py`): search → fetch intro extracts (`explaintext`) →
+  `RetrievedDoc(title, text[:700], wiki-URL, score)`. ENTITY-FIRST query (proper nouns / quoted titles first,
+  then the full question) so abstract phrasings still hit ('M3GAN', 'Marriage Story' now resolve). Crash-safe:
+  ANY error → `[]` (the live turn never sinks). 429-aware: ONE short capped retry (<=2s), then graceful degrade.
+- ☑ `needs_retrieval` gating (already in classifier) + context injection (`_build_context_block`, already in
+  every prompt builder) → wired via DI. Config: `retrieval.enabled/source` (+ `RetrievalConfig.source`);
+  `live.yaml` enabled=true, source=wikipedia. Notebook 03 wire cell builds it from config (flag = the ablation).
+- ☑ Verified end-to-end (FakeEngine): factual Q → context injected ("Referenced knowledge: …"), and the raw
+  extract CONTAINED the answer (e.g. West End Blues → "...recording...June 11, 1928" = the gold option).
+- ⚠️ HONEST FINDINGS (good rubric material): helps entity/fact recall (Eminem, Louis Armstrong, Roman weddings);
+  does NOT reliably solve very-recent **News** (qid 11239 2026-05-17 event absent from Wikipedia → near-miss
+  context); returns NOISE on pure-reasoning Qs (4902 sci-method) so gating matters; sweep hammering Wikipedia
+  triggers **429** (mitigated by retry + graceful degrade, but RAG silently degrades under heavy bursts).
+- ☐ Ablation: accuracy with vs without RAG (flip `retrieval.enabled`), + latency impact + per-topic where it
+  helps/hurts (watch over-firing on reasoning Qs). → `experiments.md`. RUN ON COLAB.
 
 ## Phase 5 — Ensemble voting (if latency allows)  ☐
 - ☐ Compare ≥2–3 models (Qwen, Mistral, Gemma/Phi) via the same `LLMEngine`.

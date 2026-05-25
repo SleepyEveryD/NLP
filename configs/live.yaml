@@ -21,7 +21,8 @@ model:
   dtype: "bfloat16"
 
 retrieval:
-  enabled: false                # Off for now -- Phase 4 turns it on.
+  enabled: true                 # Phase 4 RAG ON. The ablation (with vs without), flip this to compare.
+  source: "wikipedia"           # Live Wikipedia API -- free, RAW extracts (rule-compliant); name it in the video.
   top_k: 3
-  embedder: "intfloat/multilingual-e5-small"
+  embedder: "intfloat/multilingual-e5-small"  # (unused by the Wikipedia path; for the local-corpus option it is.)
   index_path: null

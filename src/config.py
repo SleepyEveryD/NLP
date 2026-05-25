@@ -23,6 +23,7 @@ class ModelConfig:
 @dataclass
 class RetrievalConfig:
     enabled: bool = False                 # Off for the baseline -- on later it comes.
+    source: str = "wikipedia"             # "wikipedia" (live API) | "faiss" (local corpus). Phase 4.
     top_k: int = 3
     embedder: str = "intfloat/multilingual-e5-small"
     index_path: Optional[str] = None
