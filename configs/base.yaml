@@ -1,0 +1,19 @@
+# Base run configuration. The defaults every run inherits, these are.
+# Override per experiment by copying this file or passing overrides.
+run_id: "baseline"
+seed: 13
+latency_budget_s: 30.0          # The hard wall of the game, this is.
+prompt_strategy: "zero_shot_v1"
+
+model:
+  name: "Qwen/Qwen2.5-7B-Instruct"
+  quantization: "4bit"          # bitsandbytes nf4, on a Colab T4 it fits.
+  max_new_tokens: 256
+  temperature: 0.0              # Greedy -- deterministic and fast, we stay.
+  dtype: "bfloat16"
+
+retrieval:
+  enabled: false                # Off for the baseline -- Phase 4 turns it on.
+  top_k: 3
+  embedder: "intfloat/multilingual-e5-small"
+  index_path: null

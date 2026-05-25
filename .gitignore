@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Experiment outputs (logs are reproducible; keep them out of git by default)
+experiments/runs/*
+!experiments/runs/.gitkeep
+
+# Data (corpus, dev sets, model caches)
+data/*
+!data/.gitkeep
+*.faiss
+*.index
+
+# Model / HF caches
+.cache/
+hf_cache/
+
+# OS / editor
+.DS_Store
+*.swp

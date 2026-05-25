@@ -1,0 +1,35 @@
+# Colab-oriented dependencies. Pin loosely; on Colab, torch/CUDA preinstalled they are.
+# Install with: pip install -r requirements.txt
+
+# --- Inference (Phase 0/1) ---
+transformers>=4.45.0
+accelerate>=0.34.0
+bitsandbytes>=0.43.0          # 4-bit nf4 quantization, this provides.
+sentencepiece                  # Some tokenizers, this needs.
+einops
+
+# --- Config / data / analysis ---
+pyyaml
+pandas
+matplotlib
+
+# --- RAG (Phase 4; install when needed) ---
+sentence-transformers>=3.0.0
+hnswlib>=0.8.0                 # The vector index the course uses (cosine), this is. Preferred over FAISS.
+faiss-cpu>=1.8.0              # Fallback vector store, this is.
+rank_bm25                     # Sparse BM25 for hybrid retrieval, optional it is.
+
+# --- Utilities ---
+tqdm
+requests
+
+# --- OPTIONAL: audio interface (backlog; install only if the audio interface arrives) ---
+# openai-whisper             # ASR (Session 11): whisper.load_model("base")
+# librosa                    # 16kHz audio loading
+
+# --- OPTIONAL: fine-tuning + LLM-as-judge eval (backlog; Session 12) ---
+# peft>=0.11.0               # LoRA / QLoRA adapters
+# trl                        # SFTTrainer
+# deepeval                   # GEval LLM-as-judge metric
+
+# NOTE: torch is preinstalled on Colab with the right CUDA build -- do not pin it here, you should not.
