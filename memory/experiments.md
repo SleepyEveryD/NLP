@@ -56,5 +56,46 @@ Required fields per run (the rubric): **model · prompt · latency · accuracy �
   - Open question for Phase 2: does **CoT** ("think step by step") recover the arithmetic on its own, or is a
     deterministic **calculator tool** required? A clean CoT-vs-tool comparison this sets up (good rubric depth).
 
+### prompt_eng — Phase 2: three prompt strategies head-to-head
+- Date / commit:         2026-05-25 · branch `prompt`, commit d830d68 (notebooks/02_prompt_engineering.ipynb)
+- Model:                 Qwen/Qwen2.5-7B-Instruct, 4-bit nf4 (bitsandbytes), loaded ONCE
+- Prompt strategy:       zero_shot_v1 · few_shot_v1 (3 exemplars) · cot_v1 ("think briefly → Answer: X")
+- Retrieval:             off
+- Tools:                 none
+- Ensemble:              no
+- Dataset:               dev_questions.jsonl, N=23 (6 topics)
+- Hardware:              Colab GPU (same session as baseline)
+- Generation:            pipeline default max_new_tokens=256 (NOT overridden) → CoT not truncated
+- Accuracy (overall):    zero_shot **20/23 (87.0%)** · few_shot **20/23 (87.0%)** · cot **14/23 (60.9%)**
+- Accuracy (Maths, n=4): zero_shot **2/4 (0.50)** · few_shot **3/4 (0.75)** · cot **3/4 (0.75)**
+  - topic×strategy (cot / few / zero):
+    Ancient 0.75/1.00/1.00 · Entertainment 0.50/1.00/1.00 · Maths 0.75/0.75/0.50 ·
+    News 0.50/0.75/1.00 · Philosophy 0.67/1.00/1.00 · Science 0.50/0.75/0.75
+- Latency:               mean — zero 0.87s · few 1.40s · cot 3.86s (all ≪ 30s budget; 0 violations)
+- Tokens out (mean):     zero 2.0 · few 2.0 · cot 35.9
+- ⚠️ THE cot ACCURACY NUMBERS ABOVE ARE A PARSER ARTIFACT — see CORRECTION below. zero/few unaffected.
+- BEST PROMPT (corrected): cot's 60.9% is bogus; per-question raw_output shows cot's reasoning is mostly
+  CORRECT. zero_shot/few_shot tie at 87% (real); cot likely ≥91% once re-parsed → probably the BEST.
+- READ-OFF (does CoT fix Maths 0.50?): under the bug it read "no". CORRECTED: cot is ABSENT from the maths
+  misses for dev-005 (17×13) and dev-008 (2^10) — i.e. cot SOLVED both arithmetic Qs zero/few got wrong.
+  So CoT very likely DOES lift Maths toward ~1.00. The calculator (Phase 3) value-add must be re-judged
+  against a correctly-parsed CoT baseline, NOT against zero_shot. PENDING re-parse to confirm.
+
+  ### CORRECTION (same session, 2026-05-25) — CoT collapse is a PARSER BUG, not overthinking
+  Per-question raw_output (user-supplied) is decisive. EVERY cot prediction came back "A" @ conf 0.5, yet
+  the model's own "Answer: X" line was CORRECT in 7 of the 9 shown cot misses (dev-004 D, dev-007 D,
+  dev-011 B, dev-013 D, dev-014 C, dev-017 C, dev-021 D); only dev-001 (A, 2023 cutoff) & dev-023 (D vs B)
+  are genuine model errors. ROOT CAUSE in `pipeline.py::parse_answer`:
+    1. Pattern-1 `_EXPLICIT` regex is `answer\s+(?:is\s*:?\s*|:\s*)([A-Da-d])` — the mandatory `\s+` after
+       "answer" means it CANNOT match the model's actual format "Answer:" (colon, no space). Never fires.
+    2. Falls through to pattern-7 `_ISOLATED`, which returns the FIRST standalone A–D letter — almost
+       always the English article **"a"** ("a vacuum", "a rectangle", "a dialogue", …) → "A" @ conf 0.5.
+  LATENT RISK: zero/few-shot only dodge this because they emit a BARE letter (pattern-6). Any prose answer
+  (CoT, RAG context echoes, tool re-answers) will hit the same bug → fix BEFORE Phase 3/4.
+  FIX (not yet applied — user asked analyse-only): relax `_EXPLICIT` so `\s+` is optional / "Answer:" matches;
+  and stop pattern-7 from grabbing lone "a"/"i" (prefer the LAST isolated letter, or anchor on the final
+  "Answer:" line). Then RE-PARSE the saved records.jsonl for all 3 runs (NO model re-run needed —
+  raw_output is persisted) to get the true accuracies.
+
 ## Leaderboard runs (live game)
 _(track each official run here: date, config used, final prize/level reached, observations)_

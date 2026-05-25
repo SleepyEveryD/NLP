@@ -86,10 +86,15 @@ class ExperimentLogger:
     def log(self, record: EvalRecord) -> None
     def close(self) -> None
 
-# evaluation/runner.py
-class BenchmarkRunner:
+# evaluation/runner.py  -- TWO MODES, one EvalRecord/JSONL format (D-015)
+class BenchmarkRunner:        # OFFLINE ("our own test"): dev set, correct from gold
     def __init__(self, pipeline, config: RunConfig, log_root="experiments/runs")
     def run(self, questions: list[Question]) -> str          # returns run path
+class LiveRunner:             # LIVE ("real test"): game API drives loop, correct from AnswerResult
+    def __init__(self, pipeline, config: RunConfig, game_client, log_root="experiments/runs")
+    def run(self) -> str                                     # returns run path
+def run_session(pipeline, config, *, questions=None, game_client=None,
+                log_root="experiments/runs") -> str          # THE switch: dispatches on config.mode
 ```
 
 ## C. EXTERNAL: Game API — ✅ CONFIRMED (provided `millionaire_client` package)
@@ -157,8 +162,14 @@ class GameClient:
 
 ## D. Config contract (`config.py`)
 
-`RunConfig`: `run_id, seed, latency_budget_s, model(ModelConfig), retrieval(RetrievalConfig),
-prompt_strategy, extra`. Loaded from `configs/*.yaml`, serialized into each run's `meta.json`.
+`RunConfig`: `run_id, seed, latency_budget_s, prompt_strategy, mode, dataset_path,
+model(ModelConfig), retrieval(RetrievalConfig), game(GameConfig), extra`. Loaded from
+`configs/*.yaml`, serialized into each run's `meta.json` (`meta["mode"]` always recorded).
+- `mode`: `"offline"` (our own dev-set test) | `"live"` (real game API). Free-text aliases
+  accepted via `schemas.RunMode.normalize` ("our own test"→offline, "real test"→live).
+- `GameConfig`: `competition_id(0..5), game_mode("text"|"speech"), aim_seconds(=25.0, the
+  network margin below the 30s wall)`. Ignored in offline mode.
+- Configs: `configs/base.yaml` (mode=offline default) and `configs/live.yaml` (mode=live).
 
 ## E. Experiment log layout (filesystem contract)
 

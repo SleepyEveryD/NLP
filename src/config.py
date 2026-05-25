@@ -29,13 +29,26 @@ class RetrievalConfig:
 
 
 @dataclass
+class GameConfig:
+    """Live-game ("real test") settings -- ignored when mode is offline, they are."""
+    competition_id: int = 0               # Which competition (0..5); the topic it picks.
+    game_mode: str = "text"               # "text" | "speech" -- how the question reaches us.
+    aim_seconds: float = 25.0             # Answer-by target; the network margin below the 30s wall, this leaves.
+
+
+@dataclass
 class RunConfig:
     run_id: str = "dev"
     seed: int = 13
     latency_budget_s: float = 30.0        # The hard wall of the game, this is.
     prompt_strategy: str = "zero_shot_v1"
+    # The run mode: "offline" (our own dev-set test) | "live" (the real game API). See schemas.RunMode.
+    mode: str = "offline"
+    # Where the offline dev set lives -- read only when mode is offline, it is.
+    dataset_path: str = "data/dev_questions.jsonl"
     model: ModelConfig = field(default_factory=ModelConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
+    game: GameConfig = field(default_factory=GameConfig)
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -44,7 +57,8 @@ class RunConfig:
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         model = ModelConfig(**(data.pop("model", {}) or {}))
         retrieval = RetrievalConfig(**(data.pop("retrieval", {}) or {}))
-        return cls(model=model, retrieval=retrieval, **data)
+        game = GameConfig(**(data.pop("game", {}) or {}))
+        return cls(model=model, retrieval=retrieval, game=game, **data)
 
     def to_dict(self) -> dict[str, Any]:
         # For the run's meta.json, a plain dict this gives.

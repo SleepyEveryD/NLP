@@ -1,0 +1,27 @@
+# Live-game ("real test") run configuration.
+# Same model/prompt as the baseline -- only the MODE and the game target differ.
+# Run it with: run_session(pipeline, config, game_client=<logged-in GameClient>).
+run_id: "live"
+seed: 13
+latency_budget_s: 30.0          # The hard wall of the game, this is.
+prompt_strategy: "zero_shot_v1"
+
+mode: "live"                    # The REAL test -- the game API drives the loop, correct comes post-submit.
+
+game:
+  competition_id: 0             # 0 Entertainment · 1 History · 2 Science · 3 Maths · 4 Philosophy · 5 News.
+  game_mode: "text"             # "text" | "speech".
+  aim_seconds: 25.0             # Submit by ~25s -- the network round-trip below the 30s wall, this leaves.
+
+model:
+  name: "Qwen/Qwen2.5-7B-Instruct"
+  quantization: "4bit"          # bitsandbytes nf4, on a Colab T4 it fits.
+  max_new_tokens: 256
+  temperature: 0.0              # Greedy -- deterministic and fast, we stay.
+  dtype: "bfloat16"
+
+retrieval:
+  enabled: false                # Off for now -- Phase 4 turns it on.
+  top_k: 3
+  embedder: "intfloat/multilingual-e5-small"
+  index_path: null

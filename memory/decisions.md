@@ -113,6 +113,20 @@ is only known post-submit → live `EvalRecord.correct` comes from `AnswerResult
 live** (`mode="speech"`, WAV audio endpoints) → the audio/Whisper path is a real bonus, not future work.
 Two classes named `Question` now exist (theirs vs ours) → always alias their import in adapters.
 
+### [D-015] One pipeline, two run modes — `offline` (our dev set) vs `live` (real game)
+**Date:** 2026-05-25 · **Status:** Accepted
+**Context:** User asked for two explicit modes: "our own test" (offline dev set, gold known) and
+"real test" (the live game API, gold only post-submit). Both already exercise the SAME pipeline seam.
+**Decision:** Add `schemas.RunMode {OFFLINE,LIVE}` (+ `.normalize()` for friendly aliases) and
+`RunConfig.mode`/`dataset_path`/`game(GameConfig)`. `evaluation/runner.py` keeps `BenchmarkRunner`
+(offline; `correct` from gold) and adds `LiveRunner` (wraps a logged-in `GameClient`; `correct` from
+`AnswerResult`). `run_session(pipeline, config, *, questions=None, game_client=None)` dispatches on
+`config.mode`. **Both write the identical `EvalRecord` JSONL** so `metrics.py` is mode-agnostic.
+**Consequences:** Live mode sets `pipeline.latency_budget_s = game.aim_seconds` (~25s, network margin
+below the 30s wall). `BenchmarkRunner.run(questions)` signature unchanged → notebooks 01/02 untouched.
+Per-question dynamic budget seeding from `game.time_remaining` left as a refinement (answer_fn signature
+would need `time_left`). `meta["mode"]` recorded in every run's `meta.json`.
+
 ### [D-011] Repo docs/comments in English; user-facing chat in Chinese
 **Date:** 2026-05-25 · **Status:** Accepted
 **Context:** Course/assignment language is English; Yoda style is inherently English. User asked for Chinese replies.
