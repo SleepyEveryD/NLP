@@ -8,20 +8,24 @@ runs stay reproducible (the `prompt_strategy` field in `EvalRecord` points here)
 
 ---
 
-## zero_shot_v1  (Phase 1 baseline — MCQ)
+## zero_shot_v1  (Phase 1 baseline — MCQ)  ✅ IMPLEMENTED (`src/prompting/builder.py`)
 **Goal:** force a single-letter answer, minimal tokens (latency-friendly).
-**Sketch:**
+**Convention:** `build()` returns the **user-turn content only** — NO system message, NO chat template.
+`TransformersEngine.generate()` wraps it via `apply_chat_template([{user, content}], add_generation_prompt=True)`.
+**Exact text (MCQ, no context):**
 ```
-System: You are an expert quiz contestant. Answer accurately.
-User:   Question: {text}
-        Options:
-        A) {A}
-        B) {B}
-        C) {C}
-        D) {D}
-        Reply with ONLY the letter of the correct option.
+Question: {text}
+A) {A}
+B) {B}
+C) {C}
+D) {D}
+Reply with ONLY the letter of the correct option (A, B, C, or D). No explanation, no punctuation -- the letter alone.
 ```
-**Parse:** first standalone A/B/C/D in the output. Confidence: heuristic (1.0 if clean single letter).
+**With RAG context (D-008, raw evidence only):** a `Referenced knowledge:` block of numbered raw doc
+texts is prepended before `Question:`. **Open question:** `Answer briefly in one or two sentences.`
+**Parse (`QAPipeline.parse_answer`):** priority regexes — `answer is X` / `(X)` / `Option X` / `X)` /
+letter+option-text / standalone-line letter / any isolated A–D; restricted to letters present in
+`options`; confidence 1.0 clean → 0.5 ambiguous → 0.0 fallback to first option (never empty for MCQ).
 
 ## few_shot_v1  (Phase 2 — planned)
 Prepend 2–3 solved MCQ exemplars (diverse topics) before the target question.

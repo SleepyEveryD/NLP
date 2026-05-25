@@ -29,15 +29,19 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
   `time_remaining` behave as documented when we do the first real game.
 - ☐ Verify VRAM fit + cold/warm latency on a real T4/L4; measure network RTT to the game server.
 
-## Phase 1 — Baseline single-model QA (MVP)  ☐
-- ☐ Implement `TransformersEngine` (4-bit load, chat template, greedy generate, token counts).
-  Use the course's exact `BitsAndBytesConfig` nf4 recipe (`techniques.md` Phase 1; D-012).
-- ☐ Implement `PromptBuilder` `zero_shot_v1` (MCQ → ask for a single letter).
-- ☐ Implement `QAPipeline.answer()` (classify→prompt→generate→parse) + `parse_answer()`.
-- ☐ Implement `ExperimentLogger` wiring + `BenchmarkRunner.run()`.
-- ☐ Implement `metrics.load_runs/accuracy_by/latency_summary`.
-- ☐ Build a small **dev question set** (raw, hand-checked) to measure accuracy offline.
-- ☐ `notebooks/01_baseline_qa.ipynb`: run baseline, report accuracy + latency. → log to `experiments.md`.
+## Phase 1 — Baseline single-model QA (MVP)  ◐  (code DONE 2026-05-25 via 6 parallel agents; awaiting Colab run)
+- ☑ Implement `TransformersEngine` (4-bit nf4 D-012, chat template, greedy, token counts). NOTE: uses
+  `torch_dtype=` (broader `transformers>=4.45` compat than the recipe's `dtype=`); newest transformers
+  only warns. CONVENTION: engine owns `apply_chat_template`; exposes `name`/`last_tokens_in`/`last_tokens_out`.
+- ☑ Implement `PromptBuilder` `zero_shot_v1` — registry-based; returns USER-TURN string only (engine templates it).
+- ☑ Implement `QAPipeline.answer()` (classify→retrieve-gate→prompt→generate→tool-hook→parse) + robust
+  `parse_answer()`. Crash-safe; reads `engine.last_tokens_*`; tool/RAG paths dormant (Phase 3/4 hooks).
+- ☑ `BenchmarkRunner.run()` (loop→EvalRecord→ExperimentLogger, meta=config+git+hardware) + `metrics`
+  (`load_runs`/`accuracy_by`/`latency_summary`).
+- ☑ Dev question set: `data/dev_questions.jsonl` (23 Qs, ~4/topic across the 6 comps, gold-verified;
+  News uses STABLE recent-historical facts) + loader `src/evaluation/dataset.py::load_questions`.
+- ☑ `notebooks/01_baseline_qa.ipynb` written (auto-locates repo on Drive via `src/schemas.py` marker;
+  load→warmup→demo→benchmark→accuracy/latency plots). ☐ RUN it on a T4 → record numbers in `experiments.md`.
 
 ## Phase 2 — Prompt engineering  ☐
 - ☐ Add strategies: `few_shot_v1`, `cot_v1` ("think briefly, then answer"), `concise_v1`.
