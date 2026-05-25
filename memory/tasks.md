@@ -61,8 +61,12 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
 - ⊘ KEY read-off SUSPENDED: the cot 61% was a PARSER BUG (parse_answer `_EXPLICIT` regex can't match
   "Answer:", falls to pattern-7 which grabs the article "a"→"A"). cot's reasoning is mostly CORRECT and it
   even solved 17×13 & 2^10. Re-judge "does CoT fix maths / best prompt" AFTER a parser fix + re-parse.
-- 🔴 [P2-bug] FIX `parse_answer` then RE-PARSE saved records.jsonl (no model re-run) → true zero/few/cot
-  numbers. Latent landmine for RAG/tool prose paths → do this BEFORE Phase 3. Details: experiments.md CORRECTION.
+- ◐ [P2-bug] FIX `parse_answer` ☑ DONE 2026-05-25: `_EXPLICIT` regex demanded a SPACE before the colon,
+  so cot's own "Answer: B" it MISSED → fell to pattern-7, the article "a" as "A" grabbing. Tightened to two
+  branches (`answer:` straight, or `answer is`); "answer a question" no longer a false-positive (verified).
+  RE-PARSE tool written → `src/evaluation/reparse.py` (the saved `raw_output` through the fixed parser it
+  replays, no model re-run). ☐ NEXT: run it on Colab over the `prompt_eng` records → true zero/few/cot
+  numbers (which strategy is truly best, this may change). Then safe for RAG/tool prose paths, we are.
 - ☐ `concise_v1` + difficulty-adaptive prompting experiment (simple vs harder rungs). (backlog)
 - ☐ Prompt-sensitivity study across ≥2 models. → `experiments.md`, `prompts.md`. (later, with model pool)
 

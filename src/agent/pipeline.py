@@ -170,9 +170,13 @@ class QAPipeline:
             return up if up in valid_letters else None
 
         # --- Pattern group 1: Explicit answer markers (highest confidence) ---
-        # Patterns like "Answer: B", "The answer is C", "answer is: D." caught here they are.
+        # Patterns like "Answer: B", "Answer:B", "The answer is C", "answer is: D" caught here they are.
+        # The old regex a SPACE before the colon demanded -- so "Answer: B" (cot's own format!) it MISSED,
+        # and the prose fell to pattern-7, the article "a" as "A" grabbing (P2-bug). Two clean branches now:
+        # a colon straight after "answer" (space optional), OR " is" then an optional colon. Bare "answer a
+        # question", never the article it snags -- a separator (':' or 'is'), each branch demands.
         _EXPLICIT = re.compile(
-            r"\b(?:the\s+)?answer\s+(?:is\s*:?\s*|:\s*)([A-Da-d])\b",
+            r"\b(?:the\s+)?answer\b(?:\s*:\s*|\s+is\s*:?\s*)([A-Da-d])\b",
             re.IGNORECASE,
         )
         m = _EXPLICIT.search(text)
