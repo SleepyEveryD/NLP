@@ -56,12 +56,92 @@ def _zero_shot_v1(question: Question, context: list[RetrievedDoc] | None) -> str
     return "\n".join(parts)
 
 
+def _render_mcq(text: str, options: dict[str, str]) -> str:
+    """A question and its options -> the 'Question/A)/B)...' block, this renders.
+
+    In A-D order the options appear; missing letters, skipped they are.
+    """
+    lines = [f"Question: {text.strip()}"]
+    for letter in ("A", "B", "C", "D"):
+        if letter in options:
+            lines.append(f"{letter}) {options[letter]}")
+    return "\n".join(lines)
+
+
+# A few solved exemplars -- the answer FORMAT they teach, and arithmetic they prime.
+# From OUTSIDE the dev set drawn they are -- leakage into the benchmark, avoid we must.
+_FEW_SHOT_EXAMPLES = [
+    ("What is the capital of France?",
+     {"A": "Madrid", "B": "Paris", "C": "Rome", "D": "Berlin"}, "B"),
+    ("Which gas do plants absorb from the air for photosynthesis?",
+     {"A": "Oxygen", "B": "Hydrogen", "C": "Carbon dioxide", "D": "Nitrogen"}, "C"),
+    ("What is 6 multiplied by 7?",
+     {"A": "42", "B": "36", "C": "48", "D": "49"}, "A"),
+]
+
+
+def _few_shot_v1(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """Solved exemplars before the target, this prepends -- the output format, they anchor.
+
+    A single user-turn string returned it is -- the chat template, applied elsewhere it must be.
+    """
+    parts: list[str] = []
+
+    # Context block, only when evidence exists, prepend we do.
+    if context:
+        parts.append(_build_context_block(context))
+
+    # The worked examples, first they come -- 'Answer: X' each one ends with.
+    for ex_text, ex_opts, ex_gold in _FEW_SHOT_EXAMPLES:
+        parts.append(_render_mcq(ex_text, ex_opts))
+        parts.append(f"Answer: {ex_gold}")
+        parts.append("")  # A blank line between examples, separation it gives.
+
+    # The real question, last it stands.
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Answer briefly in one or two sentences.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append("Answer with ONLY the letter (A, B, C, or D).")
+
+    return "\n".join(parts)
+
+
+def _cot_v1(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """Brief step-by-step reasoning, then 'Answer: X', this asks for.
+
+    For arithmetic especially, helpful it is -- compute before committing, the model can.
+    The parser keys on the 'Answer: X' marker (its highest-confidence pattern, that is).
+    """
+    parts: list[str] = []
+
+    # Context block, only when evidence exists, prepend we do.
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Think briefly, then answer in one or two sentences.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Think step by step briefly (one or two short sentences). "
+            "Then on a new line, write your final choice as 'Answer: X', "
+            "where X is one of A, B, C, or D."
+        )
+
+    return "\n".join(parts)
+
+
 # --- Strategy registry ---
 
 # A name -> builder function, this dict is.
-# To add a new strategy (few_shot_v1, cot_v1), register it here you must.
+# To add a new strategy, register it here you must (the human record, in memory/prompts.md it lives).
 _REGISTRY: dict[str, object] = {
     "zero_shot_v1": _zero_shot_v1,
+    "few_shot_v1": _few_shot_v1,
+    "cot_v1": _cot_v1,
 }
 
 

@@ -27,12 +27,15 @@ texts is prepended before `Question:`. **Open question:** `Answer briefly in one
 letter+option-text / standalone-line letter / any isolated A–D; restricted to letters present in
 `options`; confidence 1.0 clean → 0.5 ambiguous → 0.0 fallback to first option (never empty for MCQ).
 
-## few_shot_v1  (Phase 2 — planned)
-Prepend 2–3 solved MCQ exemplars (diverse topics) before the target question.
+## few_shot_v1  (Phase 2)  ✅ IMPLEMENTED (`src/prompting/builder.py`)
+Prepend **3 solved MCQ exemplars** (capital-of-France / photosynthesis gas / 6×7), each ending `Answer: X`,
+then the target question + `Answer with ONLY the letter (A, B, C, or D).` Exemplars are from OUTSIDE the
+dev set (no leakage). One includes arithmetic to prime the format. RAG-context block prepended if present.
 
-## cot_v1  (Phase 2 — planned)
-"Think step by step briefly (≤2 sentences), then give 'Answer: X'." Parse the letter after "Answer:".
-Watch the token cap — CoT costs latency.
+## cot_v1  (Phase 2)  ✅ IMPLEMENTED (`src/prompting/builder.py`)
+MCQ block + `Think step by step briefly (one or two short sentences). Then on a new line, write your
+final choice as 'Answer: X', where X is one of A, B, C, or D.` The parser's top-priority regex keys on the
+`Answer: X` marker. Token cap 256 default covers brief CoT; latency has ~30x headroom so cost is a non-issue.
 
 ## concise_v1 / difficulty-adaptive  (Phase 2 — planned)
 Short prompt for easy rungs; richer/CoT prompt for hard rungs. Tests the "same prompt for all?" question.

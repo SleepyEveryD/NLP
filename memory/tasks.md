@@ -40,13 +40,20 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
   (`load_runs`/`accuracy_by`/`latency_summary`).
 - ☑ Dev question set: `data/dev_questions.jsonl` (23 Qs, ~4/topic across the 6 comps, gold-verified;
   News uses STABLE recent-historical facts) + loader `src/evaluation/dataset.py::load_questions`.
-- ☑ `notebooks/01_baseline_qa.ipynb` written (auto-locates repo on Drive via `src/schemas.py` marker;
-  load→warmup→demo→benchmark→accuracy/latency plots). ☐ RUN it on a T4 → record numbers in `experiments.md`.
+- ☑ `notebooks/01_baseline_qa.ipynb` (now git-clone workflow: clones `SleepyEveryD/NLP`, no Drive;
+  load→warmup→demo→benchmark→accuracy/latency plots).
+- ☑ RAN on Colab 2026-05-25 → **87.0% (20/23)**, latency median 0.91s (0 budget violations). Logged in
+  `experiments.md`. Weak spots: Maths 0.50, Science 0.75. ☐ NEXT: inspect the 3 misses (failure modes +
+  overconfidence) — user chose this before picking Phase 2 vs Phase 3.
 
-## Phase 2 — Prompt engineering  ☐
-- ☐ Add strategies: `few_shot_v1`, `cot_v1` ("think briefly, then answer"), `concise_v1`.
-- ☐ Difficulty-adaptive prompting experiment (simple vs harder rungs).
-- ☐ Prompt-sensitivity study across ≥2 models. → `experiments.md`, `prompts.md`.
+## Phase 2 — Prompt engineering  ◐  (code DONE 2026-05-25; awaiting Colab run)
+- ☑ Add strategies `few_shot_v1` (3 exemplars, no dev-set leakage) + `cot_v1` ("think briefly → Answer: X")
+  to `PromptBuilder` registry + `_render_mcq` helper. Documented in `prompts.md`.
+- ☑ `notebooks/02_prompt_engineering.ipynb`: loads model ONCE, benchmarks all 3 strategies on the dev set,
+  compares overall + topic×strategy + **Maths-in-focus** + latency/tokens. ☐ RUN it → record in `experiments.md`.
+- ☐ KEY read-off: does `cot_v1` fix the Maths 0.50 (→ tool optional) or not (→ Phase 3 calculator needed)?
+- ☐ `concise_v1` + difficulty-adaptive prompting experiment (simple vs harder rungs). (backlog)
+- ☐ Prompt-sensitivity study across ≥2 models. → `experiments.md`, `prompts.md`. (later, with model pool)
 
 ## Phase 3 — Tools (calculator)  ☐
 - ☐ `QuestionClassifier.needs_calculator` (regex/number heuristics).
