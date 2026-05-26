@@ -228,3 +228,22 @@ _(track each official run here: date, config used, final prize/level reached, ob
   4610 (a mutation making fur CONTRAST with the environment HARMS the mice — concept, CoT) · 9796 ('bro' neologism term — obscure/maybe bad gold).
 - NEXT: route comp 3 Maths → `cot_v1` AND suppress retrieval for Maths — keyed on `competition_id` (the reliable live
   signal; topic is unset in live play). Optionally improve the News web path's empty-result rate (DDG fallback quality).
+
+### live_comp0..5 (run #6) — Maths→cot routing INCONCLUSIVE; a logger-append CONTAMINATION bug found
+- Date / commit:         2026-05-26 · branch `4-rag` (post-`86c137e`, the Maths-routing commit)
+- Config:                few_shot_v1 + calculator + routed RAG; comp 3 → `pipeline_maths` (cot_v1 + no retrieval).
+- ⚠️ RESULT UNRELIABLE — a logging bug surfaced. `ExperimentLogger` opened `records.jsonl` in APPEND ("a") mode,
+  and the run dir `live_comp{id}` is a FIXED name (gitignored → force-sync never clears it). So every re-run of the
+  sweep PILED its records onto the previous run's; `load_runs` read the UNION. Tells in the run-#6 dump: comp 0 = 22
+  answered with 5 wrong (a single game can't), qids 345/156 appear TWICE; comp 1 = 36 with qid 1157 twice. The whole
+  run-#6 dump is several sweeps merged → do NOT read its accuracy/counts.
+- Maths routing verdict: INCONCLUSIVE. comp 3 showed `6822 retr=True docs=3`, which CANNOT come from `pipeline_maths`
+  (retriever=None skips the retrieve stage) — almost certainly a leftover run-#5 record (the default pipeline). Whether
+  cot_v1 + no-retrieval helps Maths is UNKNOWN until a clean run. Maths lb still 3; News lb still 3 (calc fix holds:
+  all News `tool=None`, but 2 misses 11882/12105 are the web path returning generic/empty — retrieval QUALITY).
+- FIX APPLIED (this session):
+    1. `logger.py`: open mode "a" → "w" (truncate-per-run). `live_comp{id}` now reflects the LATEST run ONLY.
+    2. notebook detail-dump: now prints `prompt_strategy` per question + a per-comp Counter → the next run VERIFIES
+       routing at a glance (comp 3 should be `strat=cot_v1` + `retr=False`; every other comp `few_shot_v1`).
+- NEXT: CLEAN re-run (the "w" fix truncates stale dirs on open; or `rm -rf experiments/runs/live_comp*` first to be sure).
+  Then read comp 3: `strat=cot_v1` + `retr=False` confirms routing; does Maths finally climb past lb 3?
