@@ -246,6 +246,17 @@ _NON_YEAR_NUMBER_RE = re.compile(
     r"|\b\d+\s*%"           # Percentage.
 )
 
+# Date tokens -- NOT arithmetic, these are. Strip them BEFORE the operator/digit checks, we must.
+# An ISO date "2026-05-18" trips the calculator twice over: its hyphens match the minus operator AND
+# its three digit-groups (2026/05/18) satisfy the "two numbers + an operator" rule. EVERY News question
+# carries "article published on YYYY-MM-DD" -- so unstripped, the calculator fires on all of them and the
+# context-free re-answer discards the retrieved web evidence. The News competition's silent killer, this was.
+_DATE_LIKE_RE = re.compile(
+    r"\b20\d{2}-\d{2}-\d{2}\b"          # ISO date 2026-05-18 (the live News signature).
+    r"|\b\d{1,2}/\d{1,2}/\d{2,4}\b"     # 05/18/2026 or 18/5/26 (two slashes -- a date, not a fraction).
+    r"|\b\d{1,2}-\d{1,2}-\d{4}\b"       # 18-05-2026.
+)
+
 # ---------------------------------------------------------------------------
 # Retrieval cue patterns -- factual/knowledge-heavy signals, these are.
 # ---------------------------------------------------------------------------
@@ -326,7 +337,9 @@ class QuestionClassifier:
         A combination of numeric content AND an arithmetic cue, needed this is.
         Word-cue phrases that imply computation, trigger on their own they may.
         """
-        text = question.text
+        # Date tokens out first, we strip -- their hyphens/slashes are not operators, their digit-groups
+        # not operands. Else every dated News question ("published on 2026-05-18") mis-fires the calculator.
+        text = _DATE_LIKE_RE.sub(" ", question.text)
 
         # Strong word-cue phrases -- arithmetic intent without ambiguity they signal.
         if _CALC_WORD_CUES_RE.search(text):

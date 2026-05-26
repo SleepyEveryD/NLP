@@ -179,3 +179,29 @@ _(track each official run here: date, config used, final prize/level reached, ob
   `retrieved_doc_ids` (count) for EVERY wrong question + a per-competition RAG/tool usage table + per-question detail
   across ALL comps (was Maths-only). `retrieval_used=True` + `docs_landed=0` = "fired but empty" (the News bug to watch).
 - NEXT: re-run the sweep with the instrumented dump → read the News trace for 11194; route Maths → cot_v1.
+
+### live_comp0..5 (run #4) — instrumented dump READ: the News killer is a calculator-clobber bug
+- Date / commit:         2026-05-26 · branch `4-rag` (post-`f5a6804`; the 26/33 instrumented dump the user analysed)
+- Config:                few_shot_v1 + calculator + **RAG `source="routed"`** (same as run #3), now with the
+  per-question `tool_used`/`retrieval_used`/`docs_landed`埋点 that run #3 added.
+- Accuracy:              **overall 78.8% (26/33)** — 7 wrong. ⚠️ small-N (News/Maths only 1 graded each — noise).
+  - per comp (answered/correct): Entertainment 3/1 · Ancient 11/10 · Science 10/9 · Maths 1/0 · Philosophy 7/6 · News 1/0.
+  - reached_level (cumulative best): Entertainment 15 · Philosophy 15 · Science 13 · Ancient 12 · Maths 3 · News 3.
+- ROOT CAUSE FOUND (the run-#3 diagnostic gap, now CLOSED): News qid=11425 trace was
+  `tool=calculator · retrieval_used=True · docs_landed=3 ['ddg:0','ddg:1','ddg:2']` — i.e. NOT "gate didn't
+  fire" and NOT "DDG empty". The web evidence LANDED, then was THROWN AWAY. Two-part bug, confirmed + reproduced:
+    1. `classify/classifier.py::needs_calculator` returned **True** on a News question, because the ISO date
+       **`2026-05-18`** trips it twice: its hyphens match the minus operator `[+\-*/×÷]` AND its three
+       digit-groups `['2026','05','18']` satisfy the "operator + ≥2 numbers" rule (lines ~344-348).
+    2. `agent/pipeline.py::_run_calculator_tool` builds the re-answer prompt from the **bare MCQ only** —
+       NOT the retrieved docs. So once the calculator wrongly fires, the model re-answers BLIND to the snippets.
+  - EVERY News question carries "article published on YYYY-MM-DD" → EVERY News question mis-fired the calculator
+    and discarded its web evidence. THE reason News stayed bottom even with the routed web path working.
+- FIX APPLIED (this session, branch `4-rag`):
+    1. `classifier.py`: new `_DATE_LIKE_RE`; `needs_calculator` now strips ISO/slash dates BEFORE the
+       operator/digit checks. Verified: qid=11425 → needs_calculator=False; 17×13 / 2^10 / "sum of" / "20%"
+       still → True; bare year "1492" → False. (7/7 inline cases pass; no test suite in repo.)
+    2. `pipeline.py`: tool stage now gated on `not retrieval_used` — a context-free re-answer must never
+       override an evidence-grounded one (defensive 2nd layer; the calc path carries no docs today anyway).
+- NEXT: re-run the sweep on Colab → confirm News qid=11425 now keeps the web answer (expect News lift);
+  route Maths → cot_v1 (still the other unmoved bottleneck — 6657 is a concept Q the calculator can't save).

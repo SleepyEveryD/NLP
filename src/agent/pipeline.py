@@ -131,7 +131,15 @@ class QAPipeline:
             # is needed. The model a JSON call emits, run it we do, then with the number re-answer it does.
             # On any failure the plain-generate `raw` above stands -- crash-safe the maths path stays.
             with stopwatch(breakdown, "tool"):
-                if self.tools and self.classifier and self.classifier.needs_calculator(question):
+                # Skip the tool when retrieval already fired (D-NEWS): the calculator re-answer prompt
+                # carries only the bare MCQ -- NOT the retrieved docs -- so letting it override an
+                # evidence-grounded answer would silently discard the web snippets (the News-clobber bug).
+                if (
+                    self.tools
+                    and self.classifier
+                    and not retrieval_used
+                    and self.classifier.needs_calculator(question)
+                ):
                     tool_raw, used = self._run_calculator_tool(question, guard)
                     if tool_raw is not None:
                         raw = tool_raw      # The tool-grounded answer, the plain one it replaces.
