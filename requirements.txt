@@ -10,7 +10,8 @@ einops
 
 # --- Config / data / analysis ---
 pyyaml
-pandas
+pandas>=2.0,<2.3               # Colab ships 2.2.2; bare 'pandas' grabbed 3.0.x and broke google-colab /
+                              # cudf / gradio / bqplot / db-dtypes (all need <3). Cap it, we must.
 matplotlib
 
 # --- RAG (Phase 4; install when needed) ---
@@ -21,7 +22,7 @@ rank_bm25                     # Sparse BM25 for hybrid retrieval, optional it is
 
 # --- Utilities ---
 tqdm
-requests
+requests<2.33                 # Colab pins requests==2.32.4; bare 'requests' grabbed 2.34 and conflicted.
 
 # --- OPTIONAL: audio interface (backlog; install only if the audio interface arrives) ---
 # openai-whisper             # ASR (Session 11): whisper.load_model("base")
