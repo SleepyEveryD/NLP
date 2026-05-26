@@ -147,3 +147,35 @@ _(track each official run here: date, config used, final prize/level reached, ob
   News → `WebSearchRetriever` (DuckDuckGo, RAW snippets) with Wikipedia fallback; else → `FaissRetriever`
   (Simple-Wikipedia) with Wikipedia fallback. `needs_retrieval` now fires on the News recency signature too.
   `live.yaml` source="routed". PENDING Colab: build the FAISS index + re-run the sweep → measure News lift.
+
+### live_comp0..5 (run #3) — first ROUTED RAG sweep (web+FAISS), the News-lift check
+- Date / commit:         2026-05-26 · branch `4-rag` (post-`91461f3` "WebSearchRetriever, WikipediaRetriever, FaissRetriever")
+- Config:                few_shot_v1 + calculator + **RAG `source="routed"`** (News → `WebSearchRetriever`
+  DuckDuckGo, else → `FaissRetriever` / Wikipedia fallback). The retriever that run #2's ACTION TAKEN rewrote — this is its FIRST live measurement.
+- Accuracy:              **overall 80.0% (28/35)** — 7 wrong. ⚠️ **small-N**, much shorter sweep than run #2's 157
+  (Philosophy & News only 2 graded each → their per-comp accuracy is noise, do not read it).
+  - per competition (answered/correct/acc): Entertainment 12/10 (0.83) · Ancient 8/7 (0.88) · Science 7/6 (0.86) ·
+    Maths 4/3 (0.75) · Philosophy 2/1 (0.50) · News 2/1 (0.50).
+- reached_level (REAL leaderboard metric, `my_reached_levels` — CUMULATIVE best, not this-session-only):
+  Entertainment **15** · Philosophy **15** · Science **13** · Ancient **12** · **Maths 3** · **News 3**.
+  → **HEADLINE: News 1 → 3** (+2, the only mover) — the routed **web** path lifted News, exactly the run-#2
+  hypothesis. Maths still **stuck at 3** — the other bottleneck unmoved.
+- KEY READ-OFF (Maths): qid 6786 (MVT count) shows `tool=calculator correct=False` — the calculator FIRED and
+  still missed. Reconfirms (run #1, #2): **a wrong set-up the calculator cannot save** → Maths needs **CoT**, not the tool.
+  (Maths-comp trace: `tool_used Counter({None:2,'calculator':2})`, `retrieval_used Counter({False:3,True:1})`.)
+- 7 wrong (qids 183, 566, 1121, 4129, 6786, 8071, 11194) — buckets:
+  - **CoT-fixable reasoning/terminology**: 4129 (Science "constructive force of glacier" = DEPOSITION/moraine D;
+    we picked the EROSIONAL "valleys carved" A) · 6786 (MVT, above).
+  - **Recall / RAG candidates**: 183 (Welles' Nuremberg "Cathedral of Light" = lighting C, not back-projection) ·
+    8071 (Zeno USED actual infinity A; potential infinity is Aristotle's REPLY).
+  - **Suspect / source-dependent gold — do NOT tune to these**: 566 (Pulp Fiction "fabricated biblical passage" →
+    Jules IS the canonical answer, yet marked WRONG ⇒ likely a bad gold) · 1121 (Egyptian-blue decline → "recipe lost"
+    is the common reason = the option we PICKED; gold favoured another ⇒ RAG would not flip us).
+  - **News / web-path target**: 11194 (Washington Sq Park each May = NYU graduations B; we picked political rally D).
+- ⚠️ DIAGNOSTIC GAP (now closed): this run's wrong-dump carried NO per-question `tool_used`/`retrieval_used`, and the
+  detail cell was Maths-only — so whether the News web path FIRED for 11194 (and whether snippets landed) is UNKNOWN.
+  Three distinct failure modes are indistinguishable: gate didn't fire · DDG 429/blocked on Colab IP → empty · snippets
+  landed but missed. ACTION TAKEN (this session): notebook 03 dump cells now print + save `tool_used` / `retrieval_used` /
+  `retrieved_doc_ids` (count) for EVERY wrong question + a per-competition RAG/tool usage table + per-question detail
+  across ALL comps (was Maths-only). `retrieval_used=True` + `docs_landed=0` = "fired but empty" (the News bug to watch).
+- NEXT: re-run the sweep with the instrumented dump → read the News trace for 11194; route Maths → cot_v1.

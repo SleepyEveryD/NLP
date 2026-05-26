@@ -98,9 +98,14 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
   Same signal the router reads → gate and route stay in step.
 - ☑ Config: `live.yaml` now `source: "routed"`, `index_path: "data/corpus/simplewiki"`. Notebook 03 wire cell
   uses `build_retriever(config.retrieval)`. `index_path` null / missing → graceful Wikipedia fallback.
-- ☐ **VERIFY ON COLAB** (no local Python): build the FAISS index, then re-run the sweep with `source="routed"`
+- ◐ **VERIFY ON COLAB** (no local Python): build the FAISS index, then re-run the sweep with `source="routed"`
   and confirm (a) News retrieval_used=True + web snippets land, (b) News accuracy lifts above 2/7,
   (c) DDG not blocked on Colab IP (if 429/blocked → swap `WebSearchRetriever(search_fn=...)` for a news RSS/API).
+  ◐ PARTIAL (run #3, 2026-05-26): routed sweep ran → **News reached_level 1→3** (web path lifts News, (b) ✅ partial).
+  BUT (a)/(c) UNVERIFIED — the wrong-dump lacked the tool/retrieval trace, so for qid 11194 we can't tell gate-miss
+  vs DDG-blocked vs snippet-miss. ☑ FIXED: notebook 03 dump now prints/saves `tool_used`/`retrieval_used`/
+  `retrieved_doc_ids` per wrong Q + a per-comp usage table + per-question detail for ALL comps (was Maths-only).
+  ☐ NEXT: re-run instrumented sweep, read the News trace; if `retrieval_used=True`+`docs_landed=0` on News → DDG blocked.
 - ☑ Data source (legacy note): live Wikipedia Action API — kept as the knowledge-topic backend + News fallback.
 - ☑ `WikipediaRetriever` (`src/retrieval/wikipedia.py`): search → fetch intro extracts (`explaintext`) →
   `RetrievedDoc(title, text[:700], wiki-URL, score)`. ENTITY-FIRST query (proper nouns / quoted titles first,

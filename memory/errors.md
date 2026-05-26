@@ -24,4 +24,18 @@ Format: `### Symptom` · Context · Root cause · Fix · Date.
   Phase 0 notebook is the first place modules get imported/smoke-tested.
 
 ## Resolved issues
-_(none yet)_
+
+### Scoreboard `reached_level` always 0 (notebook 03)
+- Context: the section-6 ("Highest level reached: 0") and section-8 SCORES-BY-COMPETITION table both showed
+  `reached_level = 0` for every competition, while the standalone leaderboard cell printed the real levels
+  (Entertainment 15, Maths 3, ...). Confusing — looked like we never climbed.
+- Root cause: both cells computed `reached = int(df['level'].dropna().max())`. But `EvalRecord.level` is
+  `question.level` — the per-turn rung the **server sends as 0** (`Question.from_dict` → `level=data.get("level", 0)`).
+  The REAL climb lives in `EvalRecord.reached_level`/`current_level`, lifted from `AnswerResult.reachedLevel`/
+  `currentLevel` (runner.py:221) — a DIFFERENT column the scoreboard never read.
+- Fix (2026-05-26): both cells now use a `_run_reached(df)` helper = `max` of `reached_level` (fallback
+  `current_level`, then `level`). The section-8 table also gained `lb_level`/`lb_score` columns pulled straight
+  from the leaderboard API (`leaderboard.find_player`, crash-safe) — the authoritative all-time scored value,
+  so even if per-turn telemetry is None the real number still shows. `run_reached` = this-sweep climb;
+  `lb_level` = all-time best.
+- Date: 2026-05-26.
