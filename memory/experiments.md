@@ -205,3 +205,26 @@ _(track each official run here: date, config used, final prize/level reached, ob
        override an evidence-grounded one (defensive 2nd layer; the calc path carries no docs today anyway).
 - NEXT: re-run the sweep on Colab → confirm News qid=11425 now keeps the web answer (expect News lift);
   route Maths → cot_v1 (still the other unmoved bottleneck — 6657 is a concept Q the calculator can't save).
+
+### live_comp0..5 (run #5) — News calculator-clobber FIX VERIFIED (the 37/43 dump)
+- Date / commit:         2026-05-26 · branch `4-rag` (post-`7b05d0f`; the News/calc fix + pandas-pin + hard-sync notebook)
+- Config:                few_shot_v1 + calculator + RAG `source="routed"`. Same as run #4, now WITH the fix:
+  `needs_calculator` strips ISO/slash dates first; pipeline skips the tool stage when retrieval already fired.
+- Accuracy:              **overall 86.0% (37/43)** — UP from run #4's 78.8% (26/33). 6 wrong.
+  - per comp (answered/correct): Entertainment 2/0 · Ancient 15/15 · Science 5/4 · Maths 3/2 · Philosophy 15/14 · News 3/2.
+- reached_level (cumulative leaderboard best): Entertainment 15 · **Ancient 15 (12→15, MAXED; score 128k→1024000)** ·
+  Science 13 · Maths 3 · Philosophy 15 · News 3.
+- ✅ FIX CONFIRMED: all 3 News questions now `tool=None` (run #4 had `tool=calculator` on the dated News q). The
+  ISO date no longer mis-fires the calculator; the retrieved web/wiki evidence is PRESERVED in the prompt. News 2/3.
+- NEW FINDING #1 — retrieval HURTS Maths: qid=6822 (group theory: factor-group / normal-subgroup transitivity)
+  fired retrieval (the capitalised-word heuristic in `needs_retrieval`), the query distilled to "Statement", and it
+  pulled GARBAGE Wikipedia pages `['Statement','Financial statement','The Statement']`. Wrong (picked D; gold A=False,False).
+  → Maths should NOT retrieve (no FAISS index on Colab → degrades to Wikipedia with a junk query) AND needs CoT, not the tool.
+  (qid=6649 `tool=calculator retr=False correct=True` shows the date-strip fix did NOT break legit calc on real maths.)
+- NEW FINDING #2 — the News miss (11882) is retrieval QUALITY, not the calc bug: DDG came back empty → fell back to
+  Wikipedia → generic Orbán pages (not the specific 2026-05-14 article), so the answer (C Peter Magyar) wasn't in context.
+  The web path returning empty is the residual News risk (comp 1 also had 3× `retr=True docs=0` — harmless there).
+- Other wrong (recall/concept, no retrieval fired): 800 (Jay-Z 2023 title) · 128 (Isla Nublar = Hawaii, Jurassic Park) ·
+  4610 (a mutation making fur CONTRAST with the environment HARMS the mice — concept, CoT) · 9796 ('bro' neologism term — obscure/maybe bad gold).
+- NEXT: route comp 3 Maths → `cot_v1` AND suppress retrieval for Maths — keyed on `competition_id` (the reliable live
+  signal; topic is unset in live play). Optionally improve the News web path's empty-result rate (DDG fallback quality).
