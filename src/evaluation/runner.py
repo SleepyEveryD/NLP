@@ -78,10 +78,13 @@ def _build_record(
     question: Question,
     pred: Prediction,
     correct: Optional[bool],
+    reached_level: Optional[int] = None,
+    current_level: Optional[int] = None,
 ) -> EvalRecord:
     """One question + its prediction + a known-or-unknown correctness -> one EvalRecord.
 
     `correct` the CALLER decides: from gold (offline) or from AnswerResult (live), or None.
+    `reached_level`/`current_level` LIVE only -- the server's `AnswerResult` they carry; None offline.
     """
     return EvalRecord(
         run_id=run_id,
@@ -109,6 +112,8 @@ def _build_record(
         raw_output=pred.raw_output,
         error=pred.error,
         options=question.options,   # The choices shown, logged for a full replay they are (the letter the model picked, by its text we can read).
+        reached_level=reached_level,   # The server's climb telemetry (LIVE) -- the leaderboard metric, this is.
+        current_level=current_level,
     )
 
 
@@ -210,13 +215,21 @@ class LiveRunner:
                 return
             # The truth, the server now reveals -- None if it withholds it (e.g. timed out).
             correct = getattr(result, "correct", None)
-            record = _build_record(self.config.run_id, q, pred, correct)
+            # The server's level telemetry, capture it we now do -- the leaderboard by reached_level
+            # scores us (D-014), and our pipeline knows it not. From the AnswerResult, lifted it is
+            # (None it stays when the server withholds it).
+            reached_level = getattr(result, "reached_level", None)
+            current_level = getattr(result, "current_level", None)
+            record = _build_record(
+                self.config.run_id, q, pred, correct,
+                reached_level=reached_level, current_level=current_level,
+            )
             logger.log(record)
 
             counter["n"] += 1
             timed_out = getattr(result, "timed_out", False)
             print(
-                f"[{counter['n']}] qid={q.qid} lvl={q.level} "
+                f"[{counter['n']}] qid={q.qid} lvl={q.level} reached={reached_level} "
                 f"-> {letter} | correct={correct} | timed_out={timed_out} | "
                 f"latency={pred.latency_s:.1f}s (left was {time_left})"
             )
