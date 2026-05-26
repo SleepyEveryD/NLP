@@ -269,6 +269,17 @@ _RETRIEVAL_FACTUAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A recent-news / "according to the article" signature -- the live News competition's tell, this is.
+# In live play `adapt_question` the topic leaves UNSET, so on the TEXT we must fall back to fire retrieval
+# for these post-cutoff questions (else the model, unaided and blind to 2026 events, it answers). The same
+# signal the router (`retrieval.retriever._looks_like_news`) reads -- gate and route, in step they stay.
+_RETRIEVAL_NEWS_RE = re.compile(
+    r"\b20\d{2}-\d{2}-\d{2}\b"                       # an ISO date (2026-05-15), the strongest tell.
+    r"|according\s+to\s+(?:the|a|an)\b.*\barticle\b"
+    r"|\bpublished\s+on\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Topics that almost always benefit from retrieval, these do.
 _HIGH_RETRIEVAL_TOPICS: frozenset[str] = frozenset({
     "News",
@@ -358,6 +369,11 @@ class QuestionClassifier:
         """
         # Topic in the high-retrieval set -- almost always retrieve, we should.
         if question.topic in _HIGH_RETRIEVAL_TOPICS:
+            return True
+
+        # A dated "according to the article.." News question -- live play leaves topic unset, so on the
+        # text's recency signature we fire; the post-cutoff facts, ONLY retrieval can supply them.
+        if _RETRIEVAL_NEWS_RE.search(question.text or ""):
             return True
 
         # Factual cue words in the question text, search for we do.

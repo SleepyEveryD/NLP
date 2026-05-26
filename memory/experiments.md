@@ -127,3 +127,23 @@ _(track each official run here: date, config used, final prize/level reached, ob
     cannot know it). Confirms News = the canonical RAG competition.
 - Pipeline status: end-to-end LIVE works — few_shot + calculator + parser fix + options logging + 6-comp sweep.
 - NEXT: (B) settle strategy (re-parse / re-run for true cot numbers; cot may lift 4902/6854) → then (A) RAG (Phase 4).
+
+### live_comp0..5 (run #2) — bigger sweep, Wikipedia RAG actually ON (the 26-wrong dump)
+- Date / commit:         2026-05-26 · branch `4-rag` (commits 6a3a86c "Questions answered" + 6b05d0e + bf7dee1)
+- Config:                few_shot_v1 + calculator + **RAG ON = `WikipediaRetriever`** (notebook printed
+  `RAG: ON (wikipedia)`; Maths run shows `retrieval_used Counter({False:5, True:4})`). ⚠️ The section-8
+  markdown said "RAG off" — STALE/WRONG; Wikipedia WAS on. (Now fixed in the notebook.)
+- Accuracy:              **overall 83.4% (131/157)** — 26 wrong (the dump the user analysed).
+  - per competition (answered/correct): Entertainment 15/9 (0.60) · Ancient 30/26 (0.87) · Science 31/28
+    (0.90) · Maths 9/4 (0.44) · Philosophy 65/62 (0.95) · **News 7/2 (0.29)**.
+- reached_level (the REAL leaderboard metric, from `my_reached_levels`, commit 6b05d0e):
+  Entertainment **15** · Philosophy **15** · Science **13** · Ancient **12** · **Maths 3** · **News 1**.
+  → The two bottlenecks, unambiguous they are: **Maths** and **News**.
+- KEY READ-OFF: News at **2/7 EVEN WITH Wikipedia RAG ON** — Wikipedia cannot hold the post-cutoff 2026
+  events the News questions cite ("article published on 2026-05-15", a Guardian byline). The fix is a LIVE
+  **web** source for News, not Wikipedia. Maths misses are mostly bad SET-UP (S_5 order, Z_5 char-p
+  derivative, ODE, area=perimeter) → CoT, not the calculator (which a wrong set-up cannot save).
+- ACTION TAKEN (2026-05-26, this session): Phase-4 retriever REWRITTEN to a routed `Retriever` —
+  News → `WebSearchRetriever` (DuckDuckGo, RAW snippets) with Wikipedia fallback; else → `FaissRetriever`
+  (Simple-Wikipedia) with Wikipedia fallback. `needs_retrieval` now fires on the News recency signature too.
+  `live.yaml` source="routed". PENDING Colab: build the FAISS index + re-run the sweep → measure News lift.

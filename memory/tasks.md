@@ -80,9 +80,28 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
   mock-engine tests pass (no GPU). Live notebook 03 now wires `tools=default_tools()` (a no-op off the maths comp).
 - ☐ Ablation: maths-question accuracy with vs without calculator (toggle `tools=` in a benchmark on Colab). → `experiments.md`.
 
-## Phase 4 — RAG (raw evidence only)  ◐  (code DONE 2026-05-26 on `phase-3`; ablation awaits a Colab run)
-- ☑ Data source: **live Wikipedia Action API** (free, RAW extracts → rule-compliant; NAME IT IN THE VIDEO).
-  Chosen over a local FAISS corpus (no index to build) and over generic web search (HTML parsing/latency).
+## Phase 4 — RAG (raw evidence only)  ◐  (Wikipedia DONE 2026-05-26; ROUTED web+FAISS DONE 2026-05-26 on `4-rag`; Colab run + index build await)
+- ☑ Data source: **routed, three RAW-content backends** (all rule-compliant; NAME ALL IN THE VIDEO):
+  **DuckDuckGo** (live web, post-cutoff News) · **Wikipedia Action API** (knowledge fallback) ·
+  **Simple-Wikipedia + FAISS** (local dense corpus). User chose "both" (2026-05-26) after the sweep showed
+  Wikipedia-only left **News at 2/7** — it cannot hold breaking 2026 facts. Web search closes that gap.
+- ☑ `src/retrieval/retriever.py` REWRITTEN (was a `NotImplementedError` stub — so RAG had NEVER truly run
+  before the sweep used `WikipediaRetriever` directly): `WebSearchRetriever` (DDG HTML, keyless, `search_fn`
+  override hook), `FaissRetriever` (multilingual-e5 + FAISS, lazy load, e5 query/passage prefixes), and
+  `Retriever` facade that ROUTES per question — News→web(+wiki fallback), else→FAISS(+wiki fallback). All
+  crash-safe (`[]` on any failure). `build_retriever(RetrievalConfig)` factory. `WikipediaRetriever` reused.
+- ☑ `src/retrieval/build_index.py`: corpus JSONL → `<out>/index.faiss` + `docs.jsonl` (e5 "passage:" prefix,
+  chunking, normalized IP=cosine). Run on Colab: `python -m retrieval.build_index --corpus simplewiki.jsonl
+  --out data/corpus/simplewiki --text-field text --id-field title --source-field title`.
+- ☑ `needs_retrieval` now also fires on the **News recency signature** (ISO date / "according to..article" /
+  "published on") — live play leaves `topic` unset, so the text must trigger it (else News skips retrieval).
+  Same signal the router reads → gate and route stay in step.
+- ☑ Config: `live.yaml` now `source: "routed"`, `index_path: "data/corpus/simplewiki"`. Notebook 03 wire cell
+  uses `build_retriever(config.retrieval)`. `index_path` null / missing → graceful Wikipedia fallback.
+- ☐ **VERIFY ON COLAB** (no local Python): build the FAISS index, then re-run the sweep with `source="routed"`
+  and confirm (a) News retrieval_used=True + web snippets land, (b) News accuracy lifts above 2/7,
+  (c) DDG not blocked on Colab IP (if 429/blocked → swap `WebSearchRetriever(search_fn=...)` for a news RSS/API).
+- ☑ Data source (legacy note): live Wikipedia Action API — kept as the knowledge-topic backend + News fallback.
 - ☑ `WikipediaRetriever` (`src/retrieval/wikipedia.py`): search → fetch intro extracts (`explaintext`) →
   `RetrievedDoc(title, text[:700], wiki-URL, score)`. ENTITY-FIRST query (proper nouns / quoted titles first,
   then the full question) so abstract phrasings still hit ('M3GAN', 'Marriage Story' now resolve). Crash-safe:
