@@ -350,3 +350,45 @@ _(track each official run here: date, config used, final prize/level reached, ob
   genuinely terse / answer-first / NO LaTeX (it ignored "one or two short sentences" and wrote ~5 paragraphs of \frac/\mu);
   and/or (b) modestly raise the cap AND wire config.model.max_new_tokens through pipeline→engine, watching the 30s wall.
   News web-empty fallback quality still the top RAG lever. Align `mathonly` → `4-rag` before the final run.
+
+### live_comp3 (run #10) — cot_v2 TIGHTENED: truncation FIXED, but bare ARITHMETIC errors now surface
+- Date / commit:         2026-05-27 · branch `mathonly` (cot_v2 prompt tightened: "AT MOST 3 very short steps, plain
+  numbers ONLY, NO LaTeX, MUST end with 'Answer: X'"). The run-#9 fix #(a). Only the comp-3 record for qid 6679 seen
+  (+ its reached_level), not the full sweep scoreboard — so this entry is the Maths read only.
+- Config:                comp 3 → `pipeline_maths` = cot_v2 single-pass (n=1) + NO retrieval + NO calculator. Same wiring
+  as run #9; ONLY the cot_v2 instruction text changed (src/prompting/builder.py::_cot_v2).
+- ✅ THE FORMAT FIX WORKED (the run-#9 truncation cured): qid 6679 (mean of ten scores) — `tokens_out=75` (was 256 at the
+  cap), `latency=7.6s` (was 23.1s), raw = a clean 2-step chain with NO LaTeX ending in "Answer: C", `confidence=1.0`
+  (pattern-1 "Answer:" matched, not the 0.0 blind fallback). Maths `reached_level=9` — UP from run #9's 7, so the terser
+  chains let it answer more in-time and climb further. The 256-token truncation failure mode is SOLVED.
+- ❌ NEW FAILURE MODE — bare arithmetic error (NOT format, NOT truncation, NOT the run-#7 option-matching slip): qid 6679
+  scores 45,55,50,70,65,80,40,90,70,85. The model's STRUCTURE was right (mean = sum/10) but it summed to **620** instead
+  of **650** (off by 30) → mean 62 → picked **C**. Correct sum 650 → mean 65 → **gold D**. A 7B cannot reliably add ten
+  2-digit numbers in its head; cot_v2 (concise + correct method) CANNOT save a hand-arithmetic slip. It is now CONFIDENTLY
+  wrong (conf 1.0) where 6706 was a 0.0 fallback.
+- THE FIX FOR THIS = the calculator, and `needs_calculator(6679)` ALREADY returns True (the question says "mean of" →
+  `_CALC_WORD_CUES_RE` matches `mean\s+of`, classifier.py:230). But Maths has `tools=None` (run #8: the calc re-answers
+  from the BARE MCQ, discarding cot_v2 — helps pure-arithmetic Qs like 6679, HURTS concept/stats Qs where it falsely fires).
+- PROPOSED (run #11, fix #b done RIGHT — avoids the run-#8 clobber): re-enable `tools=default_tools()` for `pipeline_maths`,
+  AND change the override rule so the calculator result REPLACES cot_v2's answer ONLY when the computed number matches an
+  option's numeric value (e.g. 6679: calc 65 == option D "65" → take D). On a t-test the calc result won't equal any option
+  text ("do not reject; df=17") → cot_v2 is KEPT. A clean discriminator: "the answer IS a number" vs "the answer is a
+  conclusion that uses a number". Inverse-normal Qs (6706) still need the model's z-values; the calc only does the algebra.
+- NEXT: implement the match-an-option override + re-enable calc for Maths → re-run comp 3 → expect 6679→D. Watch the other
+  ~7 Maths Qs (does the LaTeX ban / 3-step cap hold their accuracy? does the calc override never fire wrongly on them?).
+- FULL SWEEP SEEN (same run #10, now the whole scoreboard — cot_v2-tightened, calculator STILL off): OVERALL **34/40 = 85.0%**.
+  Per comp (answered/correct/run_reached/lb_level/lb_score): Ent 3/2/2/15/1024000 · Ancient 7/6/6/15/1024000 ·
+  Science 4/3/3/15/1024000 · **Maths 10/9/9/9/16000** · Philosophy 10/9/9/15/1024000 · News 6/5/5/5/1000.
+  🟢 **MATHS lb 7 → 9** (score 4000→16000) — the cot_v2 TIGHTEN delivered: all 10 Maths Qs ran cot_v2/tool=None, latencies
+  **3.3–10.9s** (NO truncation, NO timeout), **9 correct**. The ONLY Maths miss is qid 6679 (the arithmetic slip) — exactly
+  the calculator-verifier's target. (Science lb→15 maxed; now FOUR comps at lb 15: Ent, Ancient, Science, Philosophy.)
+  Other misses (recall/concept/news — NOT Maths-arithmetic): Ent 563 (Downfall extended-cut reason, retr=False) · Ancient
+  1026 (Ancient Greek 3-way stop distinction = voiced/aspirated/unaspirated B; we picked C; retr landed 3 docs but still
+  wrong — a linguistics detail) · Science 3303 (CuO compound DIFFERS from Cu/O elements = D; we picked C) · Philosophy 8052
+  (Kenneth Waltz on imperialism) · News 11871 (Honda hit 2026-05-14; retr=True docs=['Honda','Honda Civic','Honda Accord']
+  = DDG-empty→Wikipedia junk — the web-empty residual, 3rd confirmation after runs #7/#8).
+- ✅ CALCULATOR-VERIFIER IMPLEMENTED (D-017, this session, branch `mathonly`, NOT yet pushed/run): `pipeline.py`
+  `_run_calculator_tool` rewritten — single offer-generation, then `_option_for_value` maps the result to an option and
+  OVERRIDES cot_v2 ONLY on a unique within-0.5% numeric match (else keep cot_v2). Notebook `pipeline_maths` now
+  `tools=default_tools()`. ⚠️ RISK to watch on the re-run: the verifier could FLIP one of the current 9 correct Maths Qs if
+  the calc fires and its number coincidentally matches a wrong option — the 0.5%-unique gate is the guard, but verify the 9 hold.
