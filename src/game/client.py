@@ -106,6 +106,51 @@ class GameClient:
                 "(folder NLP_assignment_api_client/). See README + PoliMillionaire.ipynb, you should."
             ) from e
         self._client = MillionaireClient(base_url, timeout=timeout)
+        # The course server, idle keep-alive sockets it drops -- while our LOCAL model thinks for
+        # seconds, stale the connection goes, and the next request a RemoteDisconnected raises. A
+        # retrying adapter, mount we do: transient drops + 5xx it reconnects-and-retries, so mid-game
+        # the run never sinks (a single dropped connection, a whole competition it must not cost).
+        self._harden_session()
+
+    def _harden_session(self) -> None:
+        """Against flaky-server drops, the underlying requests.Session armour we give.
+
+        A urllib3 Retry, on connection errors AND 5xx it fires, with capped exponential back-off.
+        On a dropped keep-alive socket, a FRESH connection the retry opens -- the stale-socket curse,
+        broken it is. Best-effort entirely: the package internals shift / urllib3 differs -> silently
+        skip we do (unhardened but alive, the client stays).
+        """
+        try:
+            from requests.adapters import HTTPAdapter
+            try:
+                from urllib3.util.retry import Retry
+            except ImportError:  # A much older urllib3, a different import path it has.
+                from urllib3.util import Retry  # type: ignore
+
+            # ALL methods retry (POST included) -- "without response" means the server saw nothing,
+            # so safe a re-send is. The 30s wall, the capped back-off respects (0.6, 1.2, 2.4s ...).
+            retry_kwargs = dict(
+                total=4, connect=4, read=2, backoff_factor=0.6,
+                status_forcelist=(500, 502, 503, 504), raise_on_status=False,
+            )
+            try:
+                retry = Retry(allowed_methods=None, **retry_kwargs)
+            except TypeError:  # urllib3 < 1.26, the old keyword name it wants.
+                retry = Retry(method_whitelist=None, **retry_kwargs)
+
+            adapter = HTTPAdapter(max_retries=retry)
+            session = self._client._base._session  # The provided package's requests.Session, this is.
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+
+            # Keep-alive OFF, the root cure it is. A LONG gap between turns -- retrieval-heavy rounds
+            # (Ancient History & Politics: EVERY question fires Wikipedia) the Wikipedia calls stretch --
+            # a reused socket lets rot, so on the next answer-submit a RemoteDisconnected we hit. A FRESH
+            # connection each request we force ('Connection: close'); the handshake cost, against the 30s
+            # wall trivial it is. No stale socket can exist, when none is reused.
+            session.headers["Connection"] = "close"
+        except Exception:
+            pass  # The internals moved -- unhardened, but the game still runs.
 
     def login(self, username: str, password: str):
         # Authenticate we must, before competitions or games touch we can.
@@ -114,6 +159,32 @@ class GameClient:
     def list_competitions(self) -> list:
         # The competitions and their public ids (0,1,2,...), these it returns.
         return self._client.competitions.list_all()
+
+    def my_reached_levels(self, username: str | None = None, mode: str = "text") -> list[dict]:
+        """Per competition, MY leaderboard standing fetch -- the server's authoritative reached_level + score.
+
+        The REAL climb, this is. Our local logs it captured not (until now); the SERVER the truth holds,
+        so a run already played, re-run we need not -- the leaderboard remembers. `username` omitted ->
+        the logged-in user we ask. A competition without an entry for us, skipped it is. Best-effort per
+        competition: one lookup fails, the rest it never sinks.
+
+        Returns: a list of dicts {competition_id, name, reached_level, score}, in competition order.
+        """
+        name = username or self._client.user.username
+        out: list[dict] = []
+        for comp in self.list_competitions():
+            try:
+                entry = self._client.leaderboard.find_player(comp.id, name, mode=mode)
+            except Exception:
+                entry = None  # That board unreachable / no entry -- onward we go, crash we must not.
+            if entry is not None:
+                out.append({
+                    "competition_id": comp.id,
+                    "name": comp.name,
+                    "reached_level": entry.reached_level,
+                    "score": entry.score,
+                })
+        return out
 
     def play(
         self,

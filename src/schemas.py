@@ -139,6 +139,11 @@ class EvalRecord:
     raw_output: str
     error: Optional[str] = None
     options: dict[str, str] = field(default_factory=dict)  # {"A": "...", ...}; the choices shown, for a full replay kept they are. Empty for open / old logs, it is.
+    # The server's level telemetry -- LIVE play only. Our pipeline knows it NOT; from `AnswerResult` it comes.
+    # The REAL leaderboard metric, `reached_level` is (by it we are scored, D-014) -- so capture it we must.
+    # None for offline rows / old logs / when the server withholds it, these stay.
+    reached_level: Optional[int] = None    # How high the RUN climbed -- across the game, its max the score is.
+    current_level: Optional[int] = None    # The level of THIS turn, as the server counted it.
 
     @staticmethod
     def now() -> float:

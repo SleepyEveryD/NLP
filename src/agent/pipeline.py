@@ -6,6 +6,7 @@ Against the 30s budget, every stage is timed.
 """
 from __future__ import annotations
 
+import json
 import re
 
 from classify.classifier import QuestionClassifier
@@ -13,6 +14,39 @@ from inference.engine import LLMEngine
 from prompting.builder import PromptBuilder
 from schemas import Prediction, Question
 from utils.timing import LatencyGuard, stopwatch
+
+
+def _render_mcq_block(question: Question) -> str:
+    """A Question -> the 'Question/A)/B)...' block, for the tool prompts this renders (A-D order)."""
+    lines = [f"Question: {question.text.strip()}"]
+    for letter in ("A", "B", "C", "D"):
+        if letter in question.options:
+            lines.append(f"{letter}) {question.options[letter]}")
+    return "\n".join(lines)
+
+
+def _extract_first_json(text: str) -> dict | None:
+    """The first balanced {...} object in the text, parse it we do -- chatter around it, tolerate we must.
+
+    Brace-counting (not a greedy regex), so trailing prose after the JSON, never swallow it we do.
+    None it returns when no parseable object there is.
+    """
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start : i + 1])
+                        return obj if isinstance(obj, dict) else None
+                    except Exception:
+                        break  # This candidate failed -- the next '{' try we do.
+        start = text.find("{", start + 1)
+    return None
 
 
 class QAPipeline:
@@ -93,13 +127,23 @@ class QAPipeline:
                 raw = self.engine.generate(prompt)
 
             # --- Stage: tool ---
-            # Phase 3 hook: the calculator loop lives here -- dormant for now, tool_used stays None.
-            # When tools present AND the classifier says arithmetic needed -- dispatch the tool we will.
+            # The calculator loop (D-013): only when tools present AND the classifier says arithmetic
+            # is needed. The model a JSON call emits, run it we do, then with the number re-answer it does.
+            # On any failure the plain-generate `raw` above stands -- crash-safe the maths path stays.
             with stopwatch(breakdown, "tool"):
-                if self.tools and self.classifier and self.classifier.needs_calculator(question):
-                    # Phase 3: the JSON-tool dispatch pattern (D-013), implement here we must.
-                    # For now, a placeholder -- does nothing, tool_used remains None.
-                    pass  # TODO (Phase 3): the calculator tool loop, wire here you must.
+                # Skip the tool when retrieval already fired (D-NEWS): the calculator re-answer prompt
+                # carries only the bare MCQ -- NOT the retrieved docs -- so letting it override an
+                # evidence-grounded answer would silently discard the web snippets (the News-clobber bug).
+                if (
+                    self.tools
+                    and self.classifier
+                    and not retrieval_used
+                    and self.classifier.needs_calculator(question)
+                ):
+                    tool_raw, used = self._run_calculator_tool(question, guard)
+                    if tool_raw is not None:
+                        raw = tool_raw      # The tool-grounded answer, the plain one it replaces.
+                        tool_used = used
 
             # --- Stage: parse ---
             # The chosen letter and confidence, extracted from messy model output they are.
@@ -144,6 +188,59 @@ class QAPipeline:
             error=None,
         )
 
+    def _run_calculator_tool(
+        self, question: Question, guard: LatencyGuard
+    ) -> tuple[str | None, str | None]:
+        """The JSON-tool dispatch (D-013), single-turn: the model a calculator call emits, run it we do,
+        then with the number it re-answers. The course's LangChain JSON pattern, over our LOCAL engine.
+
+        Returns:
+            (final_raw, "calculator") -- when the model a valid call made AND the re-answer succeeded.
+            (None, None)              -- otherwise, so the plain-generate answer untouched it stays.
+        Crash-safe entirely: a bad JSON, a forbidden expression, a calc error -- all swallowed, None returned.
+        """
+        calc = self.tools.get("calculator") if isinstance(self.tools, dict) else None
+        if calc is None:
+            return None, None
+        # Two more generations the tool costs -- below the wall too close, then skip it we do.
+        if guard.remaining() < 4.0:
+            return None, None
+
+        try:
+            mcq = _render_mcq_block(question)
+
+            # Turn 1: the tool offer. ONLY-JSON or ONLY-a-letter, the model we ask for.
+            offer = (
+                f"{mcq}\n\n"
+                "A calculator tool you may use for arithmetic. To call it, reply with ONLY this JSON "
+                "and nothing else:\n"
+                '{"name": "calculator", "arguments": {"expression": "<arithmetic expression>"}}\n'
+                "Pure arithmetic the expression must be (digits and + - * / ** % ( ) only).\n"
+                "No calculation needed? Then reply with ONLY the letter (A, B, C, or D)."
+            )
+            first = self.engine.generate(offer)
+            call = _extract_first_json(first)
+            if not call or call.get("name") != "calculator":
+                return None, None  # No tool call -- the plain answer, let it stand.
+
+            args = call.get("arguments") or {}
+            expr = str(args.get("expression", "")).strip()
+            if not expr:
+                return None, None
+            result = calc(expr)  # safe-AST calculate(); on anything non-arithmetic, it raises.
+
+            # Turn 2: the result fed back, the final letter we now demand.
+            followup = (
+                f"{mcq}\n\n"
+                f"A calculator computed: {expr} = {result}\n"
+                "Using this result, answer with ONLY the letter (A, B, C, or D)."
+            )
+            final = self.engine.generate(followup)
+            return final, "calculator"
+        except Exception:
+            # Any slip -- the maths path must never crash the turn; the plain answer, fall back to it we do.
+            return None, None
+
     @staticmethod
     def parse_answer(raw_output: str, question: Question) -> tuple[str, float]:
         """The model's text -> (answer, confidence). Robust to chatter, this must be.
@@ -170,9 +267,13 @@ class QAPipeline:
             return up if up in valid_letters else None
 
         # --- Pattern group 1: Explicit answer markers (highest confidence) ---
-        # Patterns like "Answer: B", "The answer is C", "answer is: D." caught here they are.
+        # Patterns like "Answer: B", "Answer:B", "The answer is C", "answer is: D" caught here they are.
+        # The old regex a SPACE before the colon demanded -- so "Answer: B" (cot's own format!) it MISSED,
+        # and the prose fell to pattern-7, the article "a" as "A" grabbing (P2-bug). Two clean branches now:
+        # a colon straight after "answer" (space optional), OR " is" then an optional colon. Bare "answer a
+        # question", never the article it snags -- a separator (':' or 'is'), each branch demands.
         _EXPLICIT = re.compile(
-            r"\b(?:the\s+)?answer\s+(?:is\s*:?\s*|:\s*)([A-Da-d])\b",
+            r"\b(?:the\s+)?answer\b(?:\s*:\s*|\s+is\s*:?\s*)([A-Da-d])\b",
             re.IGNORECASE,
         )
         m = _EXPLICIT.search(text)

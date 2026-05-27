@@ -246,6 +246,17 @@ _NON_YEAR_NUMBER_RE = re.compile(
     r"|\b\d+\s*%"           # Percentage.
 )
 
+# Date tokens -- NOT arithmetic, these are. Strip them BEFORE the operator/digit checks, we must.
+# An ISO date "2026-05-18" trips the calculator twice over: its hyphens match the minus operator AND
+# its three digit-groups (2026/05/18) satisfy the "two numbers + an operator" rule. EVERY News question
+# carries "article published on YYYY-MM-DD" -- so unstripped, the calculator fires on all of them and the
+# context-free re-answer discards the retrieved web evidence. The News competition's silent killer, this was.
+_DATE_LIKE_RE = re.compile(
+    r"\b20\d{2}-\d{2}-\d{2}\b"          # ISO date 2026-05-18 (the live News signature).
+    r"|\b\d{1,2}/\d{1,2}/\d{2,4}\b"     # 05/18/2026 or 18/5/26 (two slashes -- a date, not a fraction).
+    r"|\b\d{1,2}-\d{1,2}-\d{4}\b"       # 18-05-2026.
+)
+
 # ---------------------------------------------------------------------------
 # Retrieval cue patterns -- factual/knowledge-heavy signals, these are.
 # ---------------------------------------------------------------------------
@@ -267,6 +278,17 @@ _RETRIEVAL_FACTUAL_RE = re.compile(
     r"|died\s+in\b"
     r")",
     re.IGNORECASE,
+)
+
+# A recent-news / "according to the article" signature -- the live News competition's tell, this is.
+# In live play `adapt_question` the topic leaves UNSET, so on the TEXT we must fall back to fire retrieval
+# for these post-cutoff questions (else the model, unaided and blind to 2026 events, it answers). The same
+# signal the router (`retrieval.retriever._looks_like_news`) reads -- gate and route, in step they stay.
+_RETRIEVAL_NEWS_RE = re.compile(
+    r"\b20\d{2}-\d{2}-\d{2}\b"                       # an ISO date (2026-05-15), the strongest tell.
+    r"|according\s+to\s+(?:the|a|an)\b.*\barticle\b"
+    r"|\bpublished\s+on\b",
+    re.IGNORECASE | re.DOTALL,
 )
 
 # Topics that almost always benefit from retrieval, these do.
@@ -315,7 +337,9 @@ class QuestionClassifier:
         A combination of numeric content AND an arithmetic cue, needed this is.
         Word-cue phrases that imply computation, trigger on their own they may.
         """
-        text = question.text
+        # Date tokens out first, we strip -- their hyphens/slashes are not operators, their digit-groups
+        # not operands. Else every dated News question ("published on 2026-05-18") mis-fires the calculator.
+        text = _DATE_LIKE_RE.sub(" ", question.text)
 
         # Strong word-cue phrases -- arithmetic intent without ambiguity they signal.
         if _CALC_WORD_CUES_RE.search(text):
@@ -358,6 +382,11 @@ class QuestionClassifier:
         """
         # Topic in the high-retrieval set -- almost always retrieve, we should.
         if question.topic in _HIGH_RETRIEVAL_TOPICS:
+            return True
+
+        # A dated "according to the article.." News question -- live play leaves topic unset, so on the
+        # text's recency signature we fire; the post-cutoff facts, ONLY retrieval can supply them.
+        if _RETRIEVAL_NEWS_RE.search(question.text or ""):
             return True
 
         # Factual cue words in the question text, search for we do.

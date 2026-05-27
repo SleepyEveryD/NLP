@@ -21,7 +21,11 @@ model:
   dtype: "bfloat16"
 
 retrieval:
-  enabled: false                # Off for now -- Phase 4 turns it on.
+  enabled: true                 # Phase 4 RAG ON. The ablation (with vs without), flip this to compare.
+  source: "routed"              # Per-QUESTION routing: News -> live web (DuckDuckGo), else -> FAISS corpus
+                                # (or live Wikipedia when no index there is). All RAW content -- rule-compliant,
+                                # and in the video named: DuckDuckGo + Wikipedia + Simple-Wikipedia/FAISS.
+                                # Other choices: "wikipedia" | "web" | "faiss" (single-backend ablations).
   top_k: 3
-  embedder: "intfloat/multilingual-e5-small"
-  index_path: null
+  embedder: "intfloat/multilingual-e5-small"  # the FAISS path's encoder (e5; query/passage prefixes baked in).
+  index_path: "data/corpus/simplewiki"        # build it: python -m retrieval.build_index (null -> Wikipedia fallback).

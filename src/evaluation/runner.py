@@ -12,9 +12,11 @@ One run = one config; the config itself, into meta.json we write.
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import subprocess
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 from agent.pipeline import QAPipeline
 from config import RunConfig
@@ -76,10 +78,13 @@ def _build_record(
     question: Question,
     pred: Prediction,
     correct: Optional[bool],
+    reached_level: Optional[int] = None,
+    current_level: Optional[int] = None,
 ) -> EvalRecord:
     """One question + its prediction + a known-or-unknown correctness -> one EvalRecord.
 
     `correct` the CALLER decides: from gold (offline) or from AnswerResult (live), or None.
+    `reached_level`/`current_level` LIVE only -- the server's `AnswerResult` they carry; None offline.
     """
     return EvalRecord(
         run_id=run_id,
@@ -107,6 +112,8 @@ def _build_record(
         raw_output=pred.raw_output,
         error=pred.error,
         options=question.options,   # The choices shown, logged for a full replay they are (the letter the model picked, by its text we can read).
+        reached_level=reached_level,   # The server's climb telemetry (LIVE) -- the leaderboard metric, this is.
+        current_level=current_level,
     )
 
 
@@ -208,13 +215,21 @@ class LiveRunner:
                 return
             # The truth, the server now reveals -- None if it withholds it (e.g. timed out).
             correct = getattr(result, "correct", None)
-            record = _build_record(self.config.run_id, q, pred, correct)
+            # The server's level telemetry, capture it we now do -- the leaderboard by reached_level
+            # scores us (D-014), and our pipeline knows it not. From the AnswerResult, lifted it is
+            # (None it stays when the server withholds it).
+            reached_level = getattr(result, "reached_level", None)
+            current_level = getattr(result, "current_level", None)
+            record = _build_record(
+                self.config.run_id, q, pred, correct,
+                reached_level=reached_level, current_level=current_level,
+            )
             logger.log(record)
 
             counter["n"] += 1
             timed_out = getattr(result, "timed_out", False)
             print(
-                f"[{counter['n']}] qid={q.qid} lvl={q.level} "
+                f"[{counter['n']}] qid={q.qid} lvl={q.level} reached={reached_level} "
                 f"-> {letter} | correct={correct} | timed_out={timed_out} | "
                 f"latency={pred.latency_s:.1f}s (left was {time_left})"
             )
@@ -266,3 +281,53 @@ def run_session(
             "(see src/game/client.py::GameClient). Offline you wanted? Set config.mode='offline'."
         )
     return LiveRunner(pipeline, config, game_client, log_root=log_root).run()
+
+
+def run_all_competitions(
+    pipeline: QAPipeline,
+    config: RunConfig,
+    game_client,
+    *,
+    competition_ids=(0, 1, 2, 3, 4, 5),
+    log_root: str = "experiments/runs",
+    pause_s: float = 8.0,
+    on_competition=None,
+    pipeline_for: Optional[Callable[[int], QAPipeline]] = None,
+) -> list[tuple[int, Optional[str]]]:
+    """All six competitions, one LIVE game each, in sequence play -- the whole sweep, this is.
+
+    Each competition its OWN run dir gets (run_id `live_comp{id}`), so `metrics.load_runs` per-competition
+    reads them. The caller's `config` we never mutate -- a deep copy per game, with `mode='live'` + the
+    competition id set, we drive.
+
+    `pipeline_for`: a per-competition pipeline picker, optional it is. Given a `cid`, the pipeline for THAT
+    game it returns -- so Maths (comp 3) a `cot_v1` + no-retrieval pipeline can use, while the others the
+    shared `few_shot_v1` + RAG one keep. None (the default) -> the single `pipeline` for every competition
+    (back-compatible). The reliable LIVE topic signal is the competition id, not the unset `question.topic`.
+
+    Polite to the proof-of-concept server we stay (the assignment asks it): `pause_s` seconds BETWEEN games
+    we sleep. Resilient too -- one competition's failure (a RateLimitError, say) the rest it never sinks;
+    `(id, None)` for the failed one we record, and onward we go.
+
+    Returns: a list of `(competition_id, run_path-or-None)`, in play order.
+    """
+    ids = list(competition_ids)
+    results: list[tuple[int, Optional[str]]] = []
+    for i, cid in enumerate(ids):
+        cfg = copy.deepcopy(config)         # The caller's config, untouched it stays.
+        cfg.mode = "live"
+        cfg.game.competition_id = cid
+        cfg.run_id = f"live_comp{cid}"
+        if on_competition:
+            on_competition(cid)
+        # The pipeline for THIS competition -- the per-cid picker when given, else the shared one.
+        pipe = pipeline_for(cid) if pipeline_for else pipeline
+        try:
+            run_path = LiveRunner(pipe, cfg, game_client, log_root=log_root).run()
+            results.append((cid, run_path))
+        except Exception as e:  # One game falls -- the sweep survives, the failure we note.
+            print(f"  [comp {cid}] FAILED -- {type(e).__name__}: {e}")
+            results.append((cid, None))
+        if pause_s and i < len(ids) - 1:    # Between games (not after the last), polite we pause.
+            time.sleep(pause_s)
+    return results

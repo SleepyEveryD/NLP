@@ -61,21 +61,67 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
 - ⊘ KEY read-off SUSPENDED: the cot 61% was a PARSER BUG (parse_answer `_EXPLICIT` regex can't match
   "Answer:", falls to pattern-7 which grabs the article "a"→"A"). cot's reasoning is mostly CORRECT and it
   even solved 17×13 & 2^10. Re-judge "does CoT fix maths / best prompt" AFTER a parser fix + re-parse.
-- 🔴 [P2-bug] FIX `parse_answer` then RE-PARSE saved records.jsonl (no model re-run) → true zero/few/cot
-  numbers. Latent landmine for RAG/tool prose paths → do this BEFORE Phase 3. Details: experiments.md CORRECTION.
+- ◐ [P2-bug] FIX `parse_answer` ☑ DONE 2026-05-25: `_EXPLICIT` regex demanded a SPACE before the colon,
+  so cot's own "Answer: B" it MISSED → fell to pattern-7, the article "a" as "A" grabbing. Tightened to two
+  branches (`answer:` straight, or `answer is`); "answer a question" no longer a false-positive (verified).
+  RE-PARSE tool written → `src/evaluation/reparse.py` (the saved `raw_output` through the fixed parser it
+  replays, no model re-run). ☐ NEXT: run it on Colab over the `prompt_eng` records → true zero/few/cot
+  numbers (which strategy is truly best, this may change). Then safe for RAG/tool prose paths, we are.
 - ☐ `concise_v1` + difficulty-adaptive prompting experiment (simple vs harder rungs). (backlog)
 - ☐ Prompt-sensitivity study across ≥2 models. → `experiments.md`, `prompts.md`. (later, with model pool)
 
-## Phase 3 — Tools (calculator)  ☐
-- ☐ `QuestionClassifier.needs_calculator` (regex/number heuristics).
-- ☐ Tool-call loop in pipeline (detect → call `calculate()` → feed result → re-answer).
-- ☐ Ablation: maths-question accuracy with vs without calculator. → `experiments.md`.
+## Phase 3 — Tools (calculator)  ◐  (code DONE 2026-05-25; ablation awaits a Colab run)
+- ☑ `QuestionClassifier.needs_calculator` (regex/number heuristics) — already present; verified True on
+  "17 * 13", False on non-maths.
+- ☑ Tool-call loop in pipeline (D-013 JSON single-turn): `QAPipeline._run_calculator_tool` + `tools.default_tools()`
+  (`{"calculator": calculate}`). Model emits `{"name","arguments":{"expression"}}` JSON → safe-AST `calculate()`
+  → result fed back → re-answer for the letter. Crash-safe (bad JSON / forbidden expr / calc error → the plain
+  answer stands); skipped when <4s budget left. `_extract_first_json` brace-counts (tolerates chatter). 6
+  mock-engine tests pass (no GPU). Live notebook 03 now wires `tools=default_tools()` (a no-op off the maths comp).
+- ☐ Ablation: maths-question accuracy with vs without calculator (toggle `tools=` in a benchmark on Colab). → `experiments.md`.
 
-## Phase 4 — RAG (raw evidence only)  ☐
-- ☐ Build/clean a corpus (Wikipedia/PDF/HTML) OR pick a free raw-content search API (name it in video).
-- ☐ `Retriever` with multilingual-e5 + FAISS; chunking strategy.
-- ☐ `needs_retrieval` gating + context injection in `PromptBuilder`.
-- ☐ Ablation: accuracy with vs without RAG, latency impact. → `experiments.md`.
+## Phase 4 — RAG (raw evidence only)  ◐  (Wikipedia DONE 2026-05-26; ROUTED web+FAISS DONE 2026-05-26 on `4-rag`; Colab run + index build await)
+- ☑ Data source: **routed, three RAW-content backends** (all rule-compliant; NAME ALL IN THE VIDEO):
+  **DuckDuckGo** (live web, post-cutoff News) · **Wikipedia Action API** (knowledge fallback) ·
+  **Simple-Wikipedia + FAISS** (local dense corpus). User chose "both" (2026-05-26) after the sweep showed
+  Wikipedia-only left **News at 2/7** — it cannot hold breaking 2026 facts. Web search closes that gap.
+- ☑ `src/retrieval/retriever.py` REWRITTEN (was a `NotImplementedError` stub — so RAG had NEVER truly run
+  before the sweep used `WikipediaRetriever` directly): `WebSearchRetriever` (DDG HTML, keyless, `search_fn`
+  override hook), `FaissRetriever` (multilingual-e5 + FAISS, lazy load, e5 query/passage prefixes), and
+  `Retriever` facade that ROUTES per question — News→web(+wiki fallback), else→FAISS(+wiki fallback). All
+  crash-safe (`[]` on any failure). `build_retriever(RetrievalConfig)` factory. `WikipediaRetriever` reused.
+- ☑ `src/retrieval/build_index.py`: corpus JSONL → `<out>/index.faiss` + `docs.jsonl` (e5 "passage:" prefix,
+  chunking, normalized IP=cosine). Run on Colab: `python -m retrieval.build_index --corpus simplewiki.jsonl
+  --out data/corpus/simplewiki --text-field text --id-field title --source-field title`.
+- ☑ `needs_retrieval` now also fires on the **News recency signature** (ISO date / "according to..article" /
+  "published on") — live play leaves `topic` unset, so the text must trigger it (else News skips retrieval).
+  Same signal the router reads → gate and route stay in step.
+- ☑ Config: `live.yaml` now `source: "routed"`, `index_path: "data/corpus/simplewiki"`. Notebook 03 wire cell
+  uses `build_retriever(config.retrieval)`. `index_path` null / missing → graceful Wikipedia fallback.
+- ◐ **VERIFY ON COLAB** (no local Python): build the FAISS index, then re-run the sweep with `source="routed"`
+  and confirm (a) News retrieval_used=True + web snippets land, (b) News accuracy lifts above 2/7,
+  (c) DDG not blocked on Colab IP (if 429/blocked → swap `WebSearchRetriever(search_fn=...)` for a news RSS/API).
+  ◐ PARTIAL (run #3, 2026-05-26): routed sweep ran → **News reached_level 1→3** (web path lifts News, (b) ✅ partial).
+  BUT (a)/(c) UNVERIFIED — the wrong-dump lacked the tool/retrieval trace, so for qid 11194 we can't tell gate-miss
+  vs DDG-blocked vs snippet-miss. ☑ FIXED: notebook 03 dump now prints/saves `tool_used`/`retrieval_used`/
+  `retrieved_doc_ids` per wrong Q + a per-comp usage table + per-question detail for ALL comps (was Maths-only).
+  ☐ NEXT: re-run instrumented sweep, read the News trace; if `retrieval_used=True`+`docs_landed=0` on News → DDG blocked.
+- ☑ Data source (legacy note): live Wikipedia Action API — kept as the knowledge-topic backend + News fallback.
+- ☑ `WikipediaRetriever` (`src/retrieval/wikipedia.py`): search → fetch intro extracts (`explaintext`) →
+  `RetrievedDoc(title, text[:700], wiki-URL, score)`. ENTITY-FIRST query (proper nouns / quoted titles first,
+  then the full question) so abstract phrasings still hit ('M3GAN', 'Marriage Story' now resolve). Crash-safe:
+  ANY error → `[]` (the live turn never sinks). 429-aware: ONE short capped retry (<=2s), then graceful degrade.
+- ☑ `needs_retrieval` gating (already in classifier) + context injection (`_build_context_block`, already in
+  every prompt builder) → wired via DI. Config: `retrieval.enabled/source` (+ `RetrievalConfig.source`);
+  `live.yaml` enabled=true, source=wikipedia. Notebook 03 wire cell builds it from config (flag = the ablation).
+- ☑ Verified end-to-end (FakeEngine): factual Q → context injected ("Referenced knowledge: …"), and the raw
+  extract CONTAINED the answer (e.g. West End Blues → "...recording...June 11, 1928" = the gold option).
+- ⚠️ HONEST FINDINGS (good rubric material): helps entity/fact recall (Eminem, Louis Armstrong, Roman weddings);
+  does NOT reliably solve very-recent **News** (qid 11239 2026-05-17 event absent from Wikipedia → near-miss
+  context); returns NOISE on pure-reasoning Qs (4902 sci-method) so gating matters; sweep hammering Wikipedia
+  triggers **429** (mitigated by retry + graceful degrade, but RAG silently degrades under heavy bursts).
+- ☐ Ablation: accuracy with vs without RAG (flip `retrieval.enabled`), + latency impact + per-topic where it
+  helps/hurts (watch over-firing on reasoning Qs). → `experiments.md`. RUN ON COLAB.
 
 ## Phase 5 — Ensemble voting (if latency allows)  ☐
 - ☐ Compare ≥2–3 models (Qwen, Mistral, Gemma/Phi) via the same `LLMEngine`.
