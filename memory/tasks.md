@@ -140,8 +140,14 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
   the CoT correctly derived df=17 & ±2.110 (= option C), then output "Answer: B" — an OPTION-MATCHING slip (B/C
   differ only in df 18 vs 17). All 3 chains made the same slip (`confidence=1.0`), so SC couldn't help. Maths lb still 3.
 - ☑ cot PROMPT tweak for option-matching DONE → **`cot_v2`** (`builder.py`, in `prompts.md`): cot_v1 + "pick the
-  option matching EVERY computed detail (numbers/df/signs), not just the conclusion". Wired into the live Maths
-  pipeline (comp 3) under SC; `cot_v1` kept as the control. ☐ MEASURE ON COLAB: does cot_v2 flip qid 6702 B→C / lift Maths?
+  option matching EVERY computed detail (numbers/df/signs), not just the conclusion". `cot_v1` kept as the control.
+- ☑ cot_v2 TESTED (run #8): it SOLVED the Maths Q (qid 6908 abelian-group, picked D = correct) — reasoning + option-
+  matching both fixed. ❌ BUT cot_v2 + SC(n=3) TIMED OUT at **41s** (~20s/chain × 2) → the correct answer was judged a
+  loss. **FIX: SC DROPPED from live Maths** → `pipeline_maths` = **n=1 cot_v2 + retriever=None + tools=None** (single
+  ~20s pass; tools off so the n=1 calculator can't clobber cot_v2 on a stats "5%"). Maths is LATENCY-bound now, not
+  reasoning-bound. ☐ RE-RUN: does the in-time correct answer finally push Maths past lb 3?
+- ☐ (deferred) defensive SC budget-guard fix: reserve the longest-observed-chain time (not a flat 5s) so SC can't
+  blow the wall anywhere. Moot for the live run (SC now unused on Maths); do it if SC is reused (e.g. offline ablation).
 - ⚠️ LATENCY corrected: the Maths SC turn took **20.7s** (3 cot_v1 chains, up to 256 tok each), NOT ~12s — the
   sweep's max, TIGHT under the 25s aim. ☐ If SC stays on Maths, cap per-chain `max_new_tokens`.
 - ☐ Align `mathonly` → `4-rag` (the final-run notebook pins BRANCH='4-rag', so the SC code must land there).

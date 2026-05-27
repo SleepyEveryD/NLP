@@ -152,6 +152,13 @@ without checking the df). `confidence=1.0` ⇒ all 3 chains made the SAME slip, 
 help. So SC is not the Maths fix, but a cot PROMPT tweak ("pick the option whose numbers/df match your reasoning")
 might be. Latency was 20.7s (3 chains, NOT the ~12s estimated). KEEP the capability (cheap, rubric-relevant,
 n=1=no-op). The SC code lives on `mathonly` (7402281) — align onto `4-rag` before the final run.
+**UPDATE run #8 (2026-05-27, the cot_v2 fix):** cot_v2 fixed the option-matching slip AND solved the Maths Q
+(qid 6908, abelian-group, picked D = correct), but cot_v2 + SC (n=3) timed out at **41s** (~20s/chain × 2) →
+the correct answer was judged a LOSS. So **SC is DROPPED from the live Maths pipeline** — `pipeline_maths` is now
+**n=1 cot_v2 + retriever=None + tools=None** (single ~20s pass; tools off so the n=1 calculator can't clobber
+cot_v2 on a stats Q's "5%"). The SC capability stays in the codebase for offline use, but is NOT used live.
+The defensive SC budget-guard fix (reserve longest-chain time, not flat 5s) is deferred (SC unused live → moot).
+Net: Maths is now LATENCY-bound, not reasoning-bound — a single in-time cot_v2 answer should move it past lb 3.
 
 ### [D-011] Repo docs/comments in English; user-facing chat in Chinese
 **Date:** 2026-05-25 · **Status:** Accepted

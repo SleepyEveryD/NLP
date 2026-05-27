@@ -291,3 +291,30 @@ _(track each official run here: date, config used, final prize/level reached, ob
   quality** (lb still climbing 3→5 — best marginal return); (2) accept the 7B graduate/AP-Maths ceiling, OR try n=5 /
   a stronger maths prompt (but a systematic df error needs reasoning quality, not more votes). Also: **align `mathonly`
   → `4-rag`** so the final-run notebook (BRANCH='4-rag') carries the SC code.
+
+### live_comp0..5 (run #8) — cot_v2 SOLVES Maths but SC TIMES OUT (41s); Science MAXED (15); News residual reconfirmed
+- Date / commit:         2026-05-27 · branch `mathonly` (code `c8e87e0` "add 选项核对指令" = cot_v2; run dumped as a commit msg).
+- Config:                comps 0,1,2,4,5 → few_shot_v1 + calculator + routed RAG. comp 3 → `pipeline_maths`
+  = **cot_v2** (cot_v1 + option-matching check) + **`self_consistency_n=3` (T=0.7)** + NO retrieval + tool skipped under SC.
+- Accuracy:              **overall 24/28 = 85.7%** (graded). The Maths Q is EXCLUDED (timed out → correct=None), so Maths shows of=0.
+- THIS-RUN climb / ALL-TIME best (`run_reached` / `lb_level`): Ent 2/15 · Ancient 1/15 · **Science 15/15** · Maths 0/3 ·
+  Philosophy 4/15 · News 2/5. **Science MAXED at 15 this run (lb 14→15, score 1024000).** Now FOUR comps at lb 15
+  (Ent, Ancient, Science, Philosophy); only **Maths (3)** and **News (5)** remain below.
+- 🔴 THE HEADLINE — Maths qid 6908 ("group (G,∘) is abelian, which is TRUE?"): the model picked **D**
+  `(g∘h)²=g²∘h²`, which **IS the correct answer** (raw_output = a clean proof: abelian ⇒ g∘h∘g∘h = g∘g∘h∘h).
+  BUT latency=**41.0s** → `timed_out=True`, `correct=None` → counted as a LOSS. **We answered it right and lost it to a
+  TIMEOUT.** So cot_v2 fixed BOTH the reasoning AND the option-matching (run #7's slip) — Maths is now **LATENCY-bound,
+  NOT reasoning-bound.** Cause: cot_v2 chains are ~235 tok (~20s each, 2.4× cot_v1's 98); SC ran 2 chains = 41s; the
+  budget guard's flat 5s margin green-lit a 2nd chain it couldn't finish. SC also gave NO accuracy benefit (run #7).
+- News: lb **5**. qid 10512 ("2026-05-13 tech giant's cartoon mascot 'Mico'", gold = Microsoft) → picked Google;
+  `retr=True docs=3` but the docs were `['Mico (singer)','Mico','Marmoset']` — DDG EMPTY → Wikipedia fallback pulled
+  topical GARBAGE (a singer, a marmoset monkey). **2nd confirmation** (run #7 = Falcon9/LeBron) of the web-empty residual.
+- Other graded misses (hard/obscure, retr=False): Ent 76 (Spielberg–Michael Kahn editor trivia, lvl2) · Ancient 841
+  ("Homeric Question" term, lvl1) · Philosophy 9190 (prima facie LITERAL translation — picked the idiomatic "on the face of it", lvl4).
+- FIX APPLIED (this session, user picked "fix #1"): `pipeline_maths` → **cot_v2 single-pass (n=1)** + `retriever=None`
+  + **`tools=None`**. SC dropped (timed out, no benefit). tools OFF because at n=1 the tool stage is NOT auto-skipped,
+  and a stats Q's "5%" trips `needs_calculator` → the calculator would re-answer from the BARE MCQ and CLOBBER cot_v2's
+  reasoning. A single cot_v2 pass ≈ 20s (run #8's 41s was 2 chains) → fits the 30s wall. The defensive SC-guard fix
+  (reserve the longest-chain time, not a flat 5s) was NOT applied — SC is now unused on Maths, so it's moot for the live run.
+- NEXT: re-run → with the in-time correct answer, does Maths finally climb past **lb 3**? (cot_v2 single-pass should land
+  ~20s.) News web-empty fallback quality is still the top RAG lever. Align `mathonly` → `4-rag` before the final run.
