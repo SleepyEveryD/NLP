@@ -81,6 +81,11 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
 - ☐ Ablation: maths-question accuracy with vs without calculator (toggle `tools=` in a benchmark on Colab). → `experiments.md`.
 
 ## Phase 4 — RAG (raw evidence only)  ◐  (Wikipedia DONE 2026-05-26; ROUTED web+FAISS DONE 2026-05-26 on `4-rag`; Colab run + index build await)
+- ◐ **TOP RESIDUAL (run #7, 2026-05-27): News lb 3→5, but the web-empty fallback pulls GARBAGE.** qid 10470
+  ("2026-05-14, company's first annual loss in 70 years") → DDG returned EMPTY → fell back to Wikipedia with a
+  junk query → `['List of Falcon 9...','LeBron James','Reform UK']` → wrong. ☐ FIX (best marginal return left):
+  when DDG is empty, do NOT blindly Wikipedia-fallback for News; improve the query, retry DDG (lite endpoint), or
+  use a dated news source. The other 2 News landed + were correct, so the routing is right — it's RESULT QUALITY.
 - ☑ Data source: **routed, three RAW-content backends** (all rule-compliant; NAME ALL IN THE VIDEO):
   **DuckDuckGo** (live web, post-cutoff News) · **Wikipedia Action API** (knowledge fallback) ·
   **Simple-Wikipedia + FAISS** (local dense corpus). User chose "both" (2026-05-26) after the sweep showed
@@ -123,15 +128,24 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
 - ☐ Ablation: accuracy with vs without RAG (flip `retrieval.enabled`), + latency impact + per-topic where it
   helps/hurts (watch over-firing on reasoning Qs). → `experiments.md`. RUN ON COLAB.
 
-## Phase 5 — Ensemble voting (if latency allows)  ◐  (self-consistency DONE 2026-05-27 on `4-rag`; multi-model still ☐)
+## Phase 5 — Ensemble voting (if latency allows)  ◐  (self-consistency DONE+TESTED 2026-05-27 on `mathonly`; multi-model still ☐)
 - ☑ `majority_vote` IMPLEMENTED (`agent/voting.py`): most-voted wins, ties by mean confidence; builds a
   fresh Prediction with confidence = VOTE SHARE. The SHARED vote primitive (self-consistency + multi-model).
 - ☑ **Self-consistency** wired (D-016): `QAPipeline` gains `self_consistency_n`/`self_consistency_temperature`
   (n=1 default = no change). n>1 → N sampled chains, parse each, `majority_vote`; tool stage skipped under SC.
-  Notebook 03 `pipeline_maths` (comp 3) → cot_v1 + `self_consistency_n=3` (T=0.7). ☐ VERIFY ON COLAB: clean
-  sweep → does Maths climb past lb 3? Read comp 3 detail: `strat=cot_v1`, `tool=None`, `retr=False`, conf=vote-share.
+  Notebook 03 `pipeline_maths` (comp 3) → cot_v1 + `self_consistency_n=3` (T=0.7). ⚠️ The SC code is on branch
+  **`mathonly`** (commit `7402281`), NOT on `4-rag` — the notebook `BRANCH` was switched to `'mathonly'`.
+- ☑ VERIFIED ON COLAB (run #7, `experiments.md`): comp 3 = `strat=cot_v1 · tool=None · retr=False` — the plumbing
+  WORKS. ❌ but it did NOT lift Maths. The raw chain shows the cause is NOT a knowledge gap: on the lvl-1 t-test Q
+  the CoT correctly derived df=17 & ±2.110 (= option C), then output "Answer: B" — an OPTION-MATCHING slip (B/C
+  differ only in df 18 vs 17). All 3 chains made the same slip (`confidence=1.0`), so SC couldn't help. Maths lb still 3.
+- ☑ cot PROMPT tweak for option-matching DONE → **`cot_v2`** (`builder.py`, in `prompts.md`): cot_v1 + "pick the
+  option matching EVERY computed detail (numbers/df/signs), not just the conclusion". Wired into the live Maths
+  pipeline (comp 3) under SC; `cot_v1` kept as the control. ☐ MEASURE ON COLAB: does cot_v2 flip qid 6702 B→C / lift Maths?
+- ⚠️ LATENCY corrected: the Maths SC turn took **20.7s** (3 cot_v1 chains, up to 256 tok each), NOT ~12s — the
+  sweep's max, TIGHT under the 25s aim. ☐ If SC stays on Maths, cap per-chain `max_new_tokens`.
+- ☐ Align `mathonly` → `4-rag` (the final-run notebook pins BRANCH='4-rag', so the SC code must land there).
 - ☐ Compare ≥2–3 models (Qwen, Mistral, Gemma/Phi) via the same `LLMEngine`, then `majority_vote` across them.
-- ☐ Latency check: does N forward passes fit in 30s? (self-consistency n=3 ≈ 12s, confirmed in budget.) → `experiments.md`.
 
 ## Phase 6 — Polish & deliverables  ☐
 - ☐ Final submission notebook (self-explanatory, group names/emails, video link, coding-assistant statement).

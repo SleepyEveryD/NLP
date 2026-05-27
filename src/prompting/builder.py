@@ -134,6 +134,38 @@ def _cot_v1(question: Question, context: list[RetrievedDoc] | None) -> str:
     return "\n".join(parts)
 
 
+def _cot_v2(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """cot_v1 + an OPTION-MATCHING check, this is -- against adversarial near-identical distractors.
+
+    The motivating failure (run #7, qid 6702): on a t-test MCQ the model REASONED correctly (df=17,
+    ±2.110 -- option C's content) yet wrote 'Answer: B', whose only flaw was 'df=18'. B and C SHARED
+    the conclusion ('do not reject'); the model matched the conclusion alone and never cross-checked the
+    buried number against its own work. So here, AFTER reasoning, verify the chosen option matches EVERY
+    computed detail -- not the conclusion only. For open questions, identical to cot_v1 it stays (no options).
+    """
+    parts: list[str] = []
+
+    # Context block, only when evidence exists, prepend we do.
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Think briefly, then answer in one or two sentences.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Think step by step briefly (one or two short sentences). "
+            "Before deciding, CHECK the options against your reasoning: when two options state the "
+            "same conclusion, the correct one must ALSO match every detail you computed -- numbers, "
+            "degrees of freedom, signs. Pick the option that matches your work in FULL, not just the "
+            "conclusion. Then on a new line, write your final choice as 'Answer: X', where X is one "
+            "of A, B, C, or D."
+        )
+
+    return "\n".join(parts)
+
+
 # --- Strategy registry ---
 
 # A name -> builder function, this dict is.
@@ -142,6 +174,7 @@ _REGISTRY: dict[str, object] = {
     "zero_shot_v1": _zero_shot_v1,
     "few_shot_v1": _few_shot_v1,
     "cot_v1": _cot_v1,
+    "cot_v2": _cot_v2,
 }
 
 

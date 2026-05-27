@@ -251,3 +251,43 @@ _(track each official run here: date, config used, final prize/level reached, ob
   `self_consistency_n=3` (T=0.7), majority-voted; calculator skipped under SC. `majority_vote` implemented in
   `agent/voting.py`. So the clean run also checks comp 3 = `tool=None` (SC skips the tool) and `confidence`
   reads as a vote share (e.g. 0.67/1.0), not the old flat 1.0. THE question for run #7: Maths past lb 3, or not?
+
+### live_comp0..5 (run #7) — self-consistency RUNS but does NOT lift Maths (the t-test df error)
+- Date / commit:         2026-05-27 · branch **`mathonly`** (code `7402281` "math voting"; the run dumped as
+  the message of commit `2ce535a`). ⚠️ The SC code is on `mathonly`, NOT on `4-rag` — the Colab notebook's
+  `BRANCH` was switched to `'mathonly'` to pick it up (pulling `4-rag` first gave
+  `QAPipeline.__init__() got an unexpected keyword argument 'self_consistency_n'`). MERGE/align before the final run.
+- Config:                comps 0,1,2,4,5 → few_shot_v1 + calculator + routed RAG. comp 3 → `pipeline_maths`
+  = cot_v1 + **`self_consistency_n=3` (T=0.7)** + NO retrieval + tool skipped under SC. RAG `source="routed"`.
+- Accuracy:              **overall 37/42 = 88.1%** (graded; tracks the usual ~87%). 5 wrong. ⚠️ small-N per comp
+  (each game ends at its first wrong, so Ent/Maths only 1 graded each — noise).
+- THIS-RUN climb vs ALL-TIME best (read BOTH columns — `run_reached` ≠ `lb_level`; do NOT conflate):
+  Ent run **0**/lb 15 · Ancient run **6**/lb 15 · Science run **14**/lb 14 · Maths run **0**/lb 3 ·
+  Philosophy run **15**/lb 15 · News run **2**/lb 5. Only Philosophy(15) + Science(14) TOUCHED their all-time
+  best THIS run (Science 13→14, likely set here); Ancient(6)/Ent(0, died Q1) fell short of their historical 15.
+- ✅ SC VERIFIED MECHANICALLY (D-016 plumbing works): comp 3 detail = `strat=cot_v1 · tool=None · retr=False`
+  (Counter `prompt_strategy={cot_v1:1}`). Routing-by-competition_id + the vote both fired as designed.
+- ❌ SC did NOT help Maths — and the RAW CHAIN (records.jsonl, recovered) REVISES the cause (an earlier note here
+  wrongly called it a "systematic df=n vs n−1 concept error" — IT IS NOT). qid 6702 (AP-stats t-test, n=18, t=−1.973).
+  The model's CoT was **CORRECT**: *"critical t for 17 degrees of freedom (n−1 = 18−1 = 17) ... ≈ ±2.110"* — i.e. it
+  DERIVED option **C**'s content. It then wrote **"Answer: B"**. B and C are WORD-FOR-WORD identical except B says
+  df=**18**, C says df=**17**; both say "do not reject". The model latched onto the shared CONCLUSION and grabbed B
+  (first of the two) **without cross-checking that B's df contradicts its own Step-1 (17)**. So: NOT a knowledge gap
+  (it knew df=n−1 and ±2.110) — an **OPTION-MATCHING slip on near-identical distractors**. `confidence=1.0` ⇒ all 3
+  chains voted B (the SAME slip), so SC (kills RANDOM noise) couldn't help. IMPLICATION (more tractable than a ceiling):
+  a PROMPT fix is plausible — instruct cot to "pick the option whose stated numbers/df MATCH your computed ones, not
+  just the conclusion." Maths died at Q1 → run_reached 0; lb still 3 (N=1, no signal above lvl 1). Great rubric example:
+  *the model solves the stats but mis-selects when two options differ only in a buried detail.*
+- ⚠️ LATENCY: the Maths Q took **20.7s** (3 CoT chains) — the sweep's MAX (every other turn ~1.5s). Under the
+  25s aim but TIGHT; a longer chain on a harder Maths Q could breach 25s/the 30s wall. (My ~12s estimate was low —
+  cot_v1 generates up to 256 tokens/chain.) Watch it; consider a per-chain `max_new_tokens` cap if SC stays on Maths.
+- News: lb **5** (↑ from run #5's 3). All 3 News `retr=True docs=3`. The MISS (qid 10470, "2026-05-14, which
+  company's first annual loss in 70 years") retrieved GARBAGE — `['List of Falcon 9...','LeBron James','Reform UK']`
+  (Wikipedia pages). I.e. DDG returned EMPTY → fell back to Wikipedia with a junk query → irrelevant pages → wrong.
+  RESIDUAL = the web-empty fallback QUALITY (same as run #5 finding #2). The other 2 News landed + were correct.
+- Other misses (all hard/high-level or unlucky Q1 — NOT systemic): Ent 136 (Bogart birth-date trivia, Q1, retr=False) ·
+  Ancient 945 (Athens etymology 'Athênai' vs 'Athênē', lvl 6) · Science 2439 (Landau superfluidity → picked BEC, lvl 14).
+- NEXT: SC is no Maths silver bullet (systematic concept errors). Higher-value plays: (1) **News web-empty fallback
+  quality** (lb still climbing 3→5 — best marginal return); (2) accept the 7B graduate/AP-Maths ceiling, OR try n=5 /
+  a stronger maths prompt (but a systematic df error needs reasoning quality, not more votes). Also: **align `mathonly`
+  → `4-rag`** so the final-run notebook (BRANCH='4-rag') carries the SC code.

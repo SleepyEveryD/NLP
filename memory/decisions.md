@@ -143,8 +143,15 @@ Notebook 03's `pipeline_maths` (comp 3) → `cot_v1` + `self_consistency_n=3` (T
 a context-free re-answer would fight the vote, and budget). `tools=` kept on the object only so n=1
 ablations reuse it. **Consequences:** ~3×4s≈12s/Maths question (≪25s; the loop skips a sample when
 <`_SC_MIN_MARGIN_S`=5s remain, always keeping ≥1). Ticks the rubric's "ensemble reliability /
-self-consistency" + "overconfidence" (vote-share calibration) boxes. PENDING a clean Colab sweep to
-measure whether Maths finally climbs past lb 3.
+self-consistency" + "overconfidence" (vote-share calibration) boxes.
+**VERIFIED run #7 (2026-05-27, branch `mathonly`):** the plumbing WORKS (comp 3 = cot_v1/tool=None/retr=False),
+but it did NOT lift Maths. The raw chain (records.jsonl) shows WHY — and it is NOT a knowledge gap: on the lvl-1
+t-test Q the model's CoT correctly derived df=17 and ±2.110 (= option C's content), then output "Answer: B" — an
+**option-MATCHING slip** (B and C differ only in df 18 vs 17; it grabbed the shared "do not reject" conclusion
+without checking the df). `confidence=1.0` ⇒ all 3 chains made the SAME slip, so SC (kills RANDOM noise) couldn't
+help. So SC is not the Maths fix, but a cot PROMPT tweak ("pick the option whose numbers/df match your reasoning")
+might be. Latency was 20.7s (3 chains, NOT the ~12s estimated). KEEP the capability (cheap, rubric-relevant,
+n=1=no-op). The SC code lives on `mathonly` (7402281) — align onto `4-rag` before the final run.
 
 ### [D-011] Repo docs/comments in English; user-facing chat in Chinese
 **Date:** 2026-05-25 · **Status:** Accepted
