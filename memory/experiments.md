@@ -247,3 +247,7 @@ _(track each official run here: date, config used, final prize/level reached, ob
        routing at a glance (comp 3 should be `strat=cot_v1` + `retr=False`; every other comp `few_shot_v1`).
 - NEXT: CLEAN re-run (the "w" fix truncates stale dirs on open; or `rm -rf experiments/runs/live_comp*` first to be sure).
   Then read comp 3: `strat=cot_v1` + `retr=False` confirms routing; does Maths finally climb past lb 3?
+- UPDATE 2026-05-27 (`4-rag`): Maths comp 3 now uses **self-consistency** (D-016) — `cot_v1` +
+  `self_consistency_n=3` (T=0.7), majority-voted; calculator skipped under SC. `majority_vote` implemented in
+  `agent/voting.py`. So the clean run also checks comp 3 = `tool=None` (SC skips the tool) and `confidence`
+  reads as a vote share (e.g. 0.67/1.0), not the old flat 1.0. THE question for run #7: Maths past lb 3, or not?

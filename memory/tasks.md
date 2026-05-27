@@ -123,10 +123,15 @@ Reuse course patterns — exact code identifiers per phase are catalogued in `te
 - ☐ Ablation: accuracy with vs without RAG (flip `retrieval.enabled`), + latency impact + per-topic where it
   helps/hurts (watch over-firing on reasoning Qs). → `experiments.md`. RUN ON COLAB.
 
-## Phase 5 — Ensemble voting (if latency allows)  ☐
-- ☐ Compare ≥2–3 models (Qwen, Mistral, Gemma/Phi) via the same `LLMEngine`.
-- ☐ `majority_vote` / confidence-weighted vote.
-- ☐ Latency check: does N forward passes fit in 30s? If not, document the tradeoff. → `experiments.md`.
+## Phase 5 — Ensemble voting (if latency allows)  ◐  (self-consistency DONE 2026-05-27 on `4-rag`; multi-model still ☐)
+- ☑ `majority_vote` IMPLEMENTED (`agent/voting.py`): most-voted wins, ties by mean confidence; builds a
+  fresh Prediction with confidence = VOTE SHARE. The SHARED vote primitive (self-consistency + multi-model).
+- ☑ **Self-consistency** wired (D-016): `QAPipeline` gains `self_consistency_n`/`self_consistency_temperature`
+  (n=1 default = no change). n>1 → N sampled chains, parse each, `majority_vote`; tool stage skipped under SC.
+  Notebook 03 `pipeline_maths` (comp 3) → cot_v1 + `self_consistency_n=3` (T=0.7). ☐ VERIFY ON COLAB: clean
+  sweep → does Maths climb past lb 3? Read comp 3 detail: `strat=cot_v1`, `tool=None`, `retr=False`, conf=vote-share.
+- ☐ Compare ≥2–3 models (Qwen, Mistral, Gemma/Phi) via the same `LLMEngine`, then `majority_vote` across them.
+- ☐ Latency check: does N forward passes fit in 30s? (self-consistency n=3 ≈ 12s, confirmed in budget.) → `experiments.md`.
 
 ## Phase 6 — Polish & deliverables  ☐
 - ☐ Final submission notebook (self-explanatory, group names/emails, video link, coding-assistant statement).

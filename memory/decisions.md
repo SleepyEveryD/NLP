@@ -127,6 +127,25 @@ below the 30s wall). `BenchmarkRunner.run(questions)` signature unchanged → no
 Per-question dynamic budget seeding from `game.time_remaining` left as a refinement (answer_fn signature
 would need `time_left`). `meta["mode"]` recorded in every run's `meta.json`.
 
+### [D-016] Self-consistency voting for Maths (comp 3); `majority_vote` is the shared primitive
+**Date:** 2026-05-27 · **Status:** Accepted
+**Context:** Maths is the unmoved leaderboard bottleneck (lb 3 across runs #1–#6). The misses are
+REASONING/set-up errors, NOT arithmetic — our logs show the calculator FIRED on a hard Maths Q (qid 6786
+MVT count) and STILL missed (a wrong set-up no tool saves). Latency is a non-issue (cot ~3.9s; 25s aim).
+**Decision:** Add a general self-consistency capability to `QAPipeline` (`self_consistency_n`,
+`self_consistency_temperature`; **n=1 default = zero behaviour change** for every existing pipeline). When
+n>1: draw N SAMPLED chains of the same prompt, `parse_answer` each, and `majority_vote` over the letters;
+confidence becomes the VOTE SHARE (a real calibration signal). The Phase-5 `majority_vote` stub is now
+IMPLEMENTED in `agent/voting.py` (most-voted wins; ties by mean confidence) and is the SHARED vote
+primitive for BOTH self-consistency (one model, N samples) and the future multi-model ensemble.
+Notebook 03's `pipeline_maths` (comp 3) → `cot_v1` + `self_consistency_n=3` (T=0.7) + `retriever=None`.
+**Under self-consistency the calculator/tool stage is SKIPPED** (the N CoT chains compute inline and vote;
+a context-free re-answer would fight the vote, and budget). `tools=` kept on the object only so n=1
+ablations reuse it. **Consequences:** ~3×4s≈12s/Maths question (≪25s; the loop skips a sample when
+<`_SC_MIN_MARGIN_S`=5s remain, always keeping ≥1). Ticks the rubric's "ensemble reliability /
+self-consistency" + "overconfidence" (vote-share calibration) boxes. PENDING a clean Colab sweep to
+measure whether Maths finally climbs past lb 3.
+
 ### [D-011] Repo docs/comments in English; user-facing chat in Chinese
 **Date:** 2026-05-25 · **Status:** Accepted
 **Context:** Course/assignment language is English; Yoda style is inherently English. User asked for Chinese replies.

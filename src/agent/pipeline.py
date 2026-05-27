@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 
+from agent.voting import majority_vote
 from classify.classifier import QuestionClassifier
 from inference.engine import LLMEngine
 from prompting.builder import PromptBuilder
@@ -55,6 +56,10 @@ class QAPipeline:
     Injected dependencies, all of them are -- so swap, mock and benchmark each part, we can.
     """
 
+    # Below this many seconds left, no time for another ~CoT sampling pass there is -- stop, and the
+    # votes we already have, keep them. (cot_v1 a sample ~4s costs; 5s of margin, comfortably safe it is.)
+    _SC_MIN_MARGIN_S: float = 5.0
+
     def __init__(
         self,
         engine: LLMEngine,
@@ -62,6 +67,8 @@ class QAPipeline:
         classifier: QuestionClassifier | None = None,
         retriever=None,
         tools=None,
+        self_consistency_n: int = 1,
+        self_consistency_temperature: float = 0.7,
         latency_budget_s: float = 30.0,
     ):
         self.engine = engine
@@ -69,6 +76,10 @@ class QAPipeline:
         self.classifier = classifier
         self.retriever = retriever
         self.tools = tools
+        # Self-consistency: N>1 -> sample N CoT chains and majority-vote (Phase 5 / the Maths bet).
+        # n=1 (the default) -> a single greedy pass: ZERO behaviour change for every existing pipeline.
+        self.self_consistency_n = max(1, int(self_consistency_n))
+        self.self_consistency_temperature = self_consistency_temperature
         self.latency_budget_s = latency_budget_s
 
     def answer(self, question: Question) -> Prediction:
@@ -93,6 +104,10 @@ class QAPipeline:
 
         # Raw generation output -- empty string a safe default is.
         raw: str = ""
+
+        # The parsed answer/confidence -- set by the parse stage (single pass) OR the vote (self-consistency).
+        ans: str = ""
+        conf: float = 0.0
 
         try:
             # --- Stage: classify ---
@@ -122,9 +137,15 @@ class QAPipeline:
                 prompt: str = self.prompt_builder.build(question, docs)
 
             # --- Stage: generate ---
-            # The model, called with engine defaults (Phase 1 -- max_new_tokens/temperature not overridden).
+            # n=1 (default): ONE pass, engine defaults (max_new_tokens/temperature not overridden).
+            # n>1 (self-consistency): N SAMPLED chains, parsed and majority-voted -- for the hard
+            # reasoning of Maths, more robust than one greedy pass it is (the occasional good chain,
+            # the vote surfaces it; the confidence the VOTE SHARE becomes -- a real calibration signal).
             with stopwatch(breakdown, "generate"):
-                raw = self.engine.generate(prompt)
+                if self.self_consistency_n > 1:
+                    ans, conf, raw = self._self_consistency_answer(prompt, question, guard)
+                else:
+                    raw = self.engine.generate(prompt)
 
             # --- Stage: tool ---
             # The calculator loop (D-013): only when tools present AND the classifier says arithmetic
@@ -134,8 +155,12 @@ class QAPipeline:
                 # Skip the tool when retrieval already fired (D-NEWS): the calculator re-answer prompt
                 # carries only the bare MCQ -- NOT the retrieved docs -- so letting it override an
                 # evidence-grounded answer would silently discard the web snippets (the News-clobber bug).
+                # Skip too under self-consistency: the N CoT chains compute their arithmetic INLINE and
+                # vote on it -- the tool's single context-free re-answer would fight the vote (and a wrong
+                # SET-UP the calculator cannot save anyway -- our Maths logs, repeatedly this they showed).
                 if (
-                    self.tools
+                    self.self_consistency_n <= 1
+                    and self.tools
                     and self.classifier
                     and not retrieval_used
                     and self.classifier.needs_calculator(question)
@@ -146,9 +171,10 @@ class QAPipeline:
                         tool_used = used
 
             # --- Stage: parse ---
-            # The chosen letter and confidence, extracted from messy model output they are.
+            # Single-pass mode parses the raw here; self-consistency already voted (ans/conf set above).
             with stopwatch(breakdown, "parse"):
-                ans, conf = QAPipeline.parse_answer(raw, question)
+                if self.self_consistency_n <= 1:
+                    ans, conf = QAPipeline.parse_answer(raw, question)
 
         except Exception as e:
             # A crash, caught here it is -- the live game must never go silent.
@@ -187,6 +213,35 @@ class QAPipeline:
             tokens_out=getattr(self.engine, "last_tokens_out", 0),
             error=None,
         )
+
+    def _self_consistency_answer(
+        self, prompt: str, question: Question, guard: LatencyGuard
+    ) -> tuple[str, float, str]:
+        """N sampled chains of the SAME prompt -> a majority vote (the self-consistency technique).
+
+        Each sample at `self_consistency_temperature` we draw (so the chains DIVERGE -- a vote of N
+        identical greedy passes, meaningless it would be). Each we parse to a letter; over those
+        letters `majority_vote` decides. Budget-aware: a further sample we skip once under
+        `_SC_MIN_MARGIN_S` the guard falls -- but at LEAST one we always keep (the loop's first pass,
+        the margin check never blocks).
+
+        Returns: (answer, confidence, raw_output) -- the confidence the VOTE SHARE is (winners/total),
+        and the raw the most-confident winning chain's text (a representative the log keeps).
+        """
+        candidates: list[Prediction] = []
+        for _ in range(self.self_consistency_n):
+            # Time for another ~CoT pass, is there? Below the margin -> the votes we have, settle for them.
+            if candidates and guard.remaining() < self._SC_MIN_MARGIN_S:
+                break
+            sample = self.engine.generate(
+                prompt, temperature=self.self_consistency_temperature
+            )
+            a, c = QAPipeline.parse_answer(sample, question)
+            candidates.append(
+                Prediction(qid=question.qid, answer=a, confidence=c, raw_output=sample)
+            )
+        winner = majority_vote(candidates)  # >=1 candidate always -- the empty-list guard never trips.
+        return winner.answer, winner.confidence, winner.raw_output
 
     def _run_calculator_tool(
         self, question: Question, guard: LatencyGuard
