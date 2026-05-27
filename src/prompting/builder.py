@@ -135,13 +135,21 @@ def _cot_v1(question: Question, context: list[RetrievedDoc] | None) -> str:
 
 
 def _cot_v2(question: Question, context: list[RetrievedDoc] | None) -> str:
-    """cot_v1 + an OPTION-MATCHING check, this is -- against adversarial near-identical distractors.
+    """cot_v1 + an OPTION-MATCHING check + a HARD brevity cap, this is.
 
-    The motivating failure (run #7, qid 6702): on a t-test MCQ the model REASONED correctly (df=17,
-    ±2.110 -- option C's content) yet wrote 'Answer: B', whose only flaw was 'df=18'. B and C SHARED
-    the conclusion ('do not reject'); the model matched the conclusion alone and never cross-checked the
-    buried number against its own work. So here, AFTER reasoning, verify the chosen option matches EVERY
-    computed detail -- not the conclusion only. For open questions, identical to cot_v1 it stays (no options).
+    Two motivating failures, this prompt answers:
+      * run #7, qid 6702 (the OPTION-MATCHING slip): on a t-test MCQ the model REASONED correctly
+        (df=17, ±2.110 -- option C's content) yet wrote 'Answer: B', whose only flaw was 'df=18'.
+        B and C SHARED the conclusion ('do not reject'); the model matched the conclusion alone and
+        never cross-checked the buried number against its own work. So: verify the chosen option
+        matches EVERY computed detail -- not the conclusion only.
+      * run #9, qid 6706 (the TRUNCATION loss): the model's set-up was CORRECT (z=-0.524/-0.842,
+        the two equations) but it wrote ~5 paragraphs of LaTeX and hit the 256-token cap BEFORE the
+        'Answer:' line -- so the parser fell back to a blind 'A'. At ~11 tok/s the 256 cap ≈ the 25s
+        wall, so MORE tokens would only time out. The cure is FEWER tokens to the answer: cap the
+        steps, BAN LaTeX (the token hog -- \\frac/\\mu/$...$ tripled the length), and DEMAND the
+        'Answer:' line always be reached.
+    For open questions, identical to cot_v1 it stays (no options).
     """
     parts: list[str] = []
 
@@ -155,12 +163,11 @@ def _cot_v2(question: Question, context: list[RetrievedDoc] | None) -> str:
     else:
         parts.append(_render_mcq(question.text, question.options))
         parts.append(
-            "Think step by step briefly (one or two short sentences). "
-            "Before deciding, CHECK the options against your reasoning: when two options state the "
-            "same conclusion, the correct one must ALSO match every detail you computed -- numbers, "
-            "degrees of freedom, signs. Pick the option that matches your work in FULL, not just the "
-            "conclusion. Then on a new line, write your final choice as 'Answer: X', where X is one "
-            "of A, B, C, or D."
+            "Solve in AT MOST 3 very short steps. Plain numbers ONLY -- NO LaTeX, no \\frac, "
+            "no \\mu/\\sigma, no $...$; write 'mu'/'sigma' as words and keep each step under ~12 "
+            "words. When two options share the same conclusion, pick the one whose numbers (values, "
+            "signs, degrees of freedom) match your result EXACTLY -- not just the conclusion. You "
+            "MUST end on a new line with 'Answer: X' (X = A, B, C, or D) -- always reach that line."
         )
 
     return "\n".join(parts)

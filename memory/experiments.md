@@ -318,3 +318,35 @@ _(track each official run here: date, config used, final prize/level reached, ob
   (reserve the longest-chain time, not a flat 5s) was NOT applied — SC is now unused on Maths, so it's moot for the live run.
 - NEXT: re-run → with the in-time correct answer, does Maths finally climb past **lb 3**? (cot_v2 single-pass should land
   ~20s.) News web-empty fallback quality is still the top RAG lever. Align `mathonly` → `4-rag` before the final run.
+
+### live_comp0..5 (run #9) — cot_v2 single-pass BREAKS the Maths ceiling (lb 3→7); the one miss is TOKEN TRUNCATION
+- Date / commit:         2026-05-27 · branch `mathonly` (code `0f9c824` "remove voting to reduce the time"; run dumped as commit `a24629d`).
+- Config:                comps 0,1,2,4,5 → few_shot_v1 + calculator + routed RAG. comp 3 → `pipeline_maths`
+  = **cot_v2 single-pass (n=1)** + NO retrieval + **NO calculator** (the run-#8 fix: SC dropped, tools off so a stats "%" can't clobber cot_v2).
+- Accuracy:              **overall 26/32 = 81.2%** (graded). Maths **7/8 = 0.875**.
+- THIS-RUN climb / ALL-TIME best (`run_reached` / `lb_level`, `lb_score`): Ent 6/15 (1024000) · Ancient 0/15 (1024000) ·
+  Science 13/15 (1024000) · **Maths 7/7 (4000)** · Philosophy 0/15 (1024000) · News 0/5 (1000).
+- 🟢 THE HEADLINE — **Maths broke past lb 3 for the first time: lb 3 → 7** (run_reached 7, score 300→4000). The run-#8
+  fix (cot_v2 single-pass, n=1, no tool) WORKED: 7 of 8 Maths Qs correct, latencies 5.1–23.1s (all under the 30s wall,
+  no timeout — unlike run #8's 41s SC blowup). cot_v2 reasoning is sound AND in-budget when it's a single pass.
+- ❌ THE ONE MISS (qid 6706, lvl reached 7) — **NOT a reasoning error, NOT the run-#7 option-matching slip: it is TOKEN
+  TRUNCATION.** Q: trucks normally distributed, P(>12000)=0.70 & P(>10000)=0.80 → find μ, σ. The model's CoT was
+  CORRECT — it set up z(30th pct)=−0.524, z(20th pct)=−0.842 and the two equations (12000−μ)/σ=−0.524,
+  (10000−μ)/σ=−0.842. Solving gives σ≈6300, μ≈15,300 → **gold = D**. BUT `tokens_out=256` = the engine's
+  `max_new_tokens` default (engine.py:99; pipeline.py:148 calls `generate(prompt)` WITHOUT passing
+  config.model.max_new_tokens, so the YAML's 256 is never wired — the 256 cap is the hardcoded default, coincidentally equal).
+  `raw_output` ends mid-algebra at **"- From"** — the cap hit BEFORE the "Answer: X" line. With no answer marker,
+  `parse_answer` patterns 1–7 all miss → the last-resort fallback (pipeline.py:408) submits `sorted(options)[0]` = **"A"**
+  at **confidence=0.0** (the record confirms: predicted "A", conf 0.0). So the model never "chose" A — it ran out of tokens
+  and the parser blind-defaulted. A NEW Maths failure mode: the chain is correct but too verbose to finish in 256 tokens.
+- ⚠️ LATENCY CAUTION on the naive fix: this turn was **23.1s for 256 tokens ≈ 11 tok/s**. Finishing the solve + "Answer: D"
+  needs ~120–180 more tokens ≈ +11–16s → would BREACH the 30s wall. So simply raising `max_new_tokens` trades a
+  truncation-loss for a TIMEOUT-loss (run #8's lesson). The chain must reach the answer FASTER, not just longer.
+- Other graded misses (game ends at first wrong → each comp 1 graded after its climb, all noise/known): Ent (1 wrong after
+  6 right, reached 6) · Ancient 884 (Neo-Assyrian "largest empire" factor, reached 0, retr=False) · Science (1 wrong after
+  13 right, reached 13) · Philosophy 8727 (left-conservatism def, reached 0) · News 11552 (Cavs–Pistons 2026-05-18 score,
+  retr=True docs=3 but Wikipedia-fallback junk — the web-empty residual again).
+- NEXT (Maths, to convert 7→higher): make cot_v2 reach "Answer: X" inside budget — (a) tighten the prompt so reasoning is
+  genuinely terse / answer-first / NO LaTeX (it ignored "one or two short sentences" and wrote ~5 paragraphs of \frac/\mu);
+  and/or (b) modestly raise the cap AND wire config.model.max_new_tokens through pipeline→engine, watching the 30s wall.
+  News web-empty fallback quality still the top RAG lever. Align `mathonly` → `4-rag` before the final run.
