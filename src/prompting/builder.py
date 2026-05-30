@@ -422,3 +422,34 @@ class PromptBuilder:
                 f"Known strategies, these are: {known}"
             )
         return builder_fn(question, context)  # type: ignore[operator]
+
+
+class RoutingPromptBuilder:
+    """A drop-in PromptBuilder that PICKS the strategy per question -- adaptive routing in live play.
+
+    The `QAPipeline` only calls `.build(question, context)` and reads `.strategy` for the log; a duck-type
+    of `PromptBuilder`, this is. On each build we ask a `ReasoningRouter` which strategy this question's
+    reasoning shape wants, set `self.strategy` to that name (so the EvalRecord logs WHICH prompt actually
+    ran -- per question it now varies), and delegate to that strategy's builder.
+
+    The POLICY (category -> strategy) and the FALLBACK are the router's. For Maths live play the
+    conservative policy is: re-route ONLY the counting/temporal/enumeration shapes to
+    `structured_enumeration_cot` (the proven clock-chime fix) and leave everything else on the
+    known-good `cot_v2` -- so concept/stats questions never regress.
+    """
+
+    def __init__(self, router=None, policy=None, fallback_strategy: str = "cot_v2"):
+        # Imported here (not at module top) -- the classify package importing prompting would otherwise
+        # risk a cycle, and most PromptBuilder users never need the router.
+        from classify.reasoning_router import ReasoningRouter
+        self.router = router or ReasoningRouter(policy=policy, fallback_strategy=fallback_strategy)
+        # Set per-build to the chosen strategy; before the first build, a label it carries.
+        self.strategy: str = "adaptive"
+        self._builders: dict[str, PromptBuilder] = {}
+
+    def build(self, question: Question, context: list[RetrievedDoc] | None = None) -> str:
+        signal, strat = self.router.route(question)
+        self.strategy = strat   # the EvalRecord reads this AFTER build -> logs the routed strategy.
+        if strat not in self._builders:
+            self._builders[strat] = PromptBuilder(strat)
+        return self._builders[strat].build(question, context)

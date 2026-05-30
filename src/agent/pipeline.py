@@ -74,17 +74,34 @@ class QAPipeline:
         self_consistency_n: int = 1,
         self_consistency_temperature: float = 0.7,
         latency_budget_s: float = 30.0,
+        max_new_tokens: int | None = None,
     ):
         self.engine = engine
         self.prompt_builder = prompt_builder
         self.classifier = classifier
         self.retriever = retriever
         self.tools = tools
+        # The generation cap, optional it is. None (default) -> pass NOTHING to engine.generate, so the
+        # engine's own default (256) stands -- EXACT current behaviour for every existing pipeline, no
+        # change at all. Set it (e.g. 512) when a verbose strategy needs room to reach its 'Answer:' line:
+        # at n=1 the 256 default TRUNCATED structured/CoT chains mid-reasoning (the no_answer failure the
+        # offline routing experiment surfaced). With the game's 130s budget, 512 is comfortably affordable.
+        self.max_new_tokens = max_new_tokens
         # Self-consistency: N>1 -> sample N CoT chains and majority-vote (Phase 5 / the Maths bet).
         # n=1 (the default) -> a single greedy pass: ZERO behaviour change for every existing pipeline.
         self.self_consistency_n = max(1, int(self_consistency_n))
         self.self_consistency_temperature = self_consistency_temperature
         self.latency_budget_s = latency_budget_s
+
+    def _gen(self, prompt: str, **kwargs) -> str:
+        """engine.generate, with `max_new_tokens` injected ONLY when this pipeline set one.
+
+        None -> we pass nothing, so the engine default stands (byte-for-byte the old behaviour). A caller
+        that already passed max_new_tokens explicitly, we never override.
+        """
+        if self.max_new_tokens is not None and "max_new_tokens" not in kwargs:
+            kwargs["max_new_tokens"] = self.max_new_tokens
+        return self.engine.generate(prompt, **kwargs)
 
     def answer(self, question: Question) -> Prediction:
         """One question in, one Prediction out -- the whole system, in a single call this is.
@@ -149,7 +166,7 @@ class QAPipeline:
                 if self.self_consistency_n > 1:
                     ans, conf, raw = self._self_consistency_answer(prompt, question, guard)
                 else:
-                    raw = self.engine.generate(prompt)
+                    raw = self._gen(prompt)
 
             # --- Stage: tool ---
             # The calculator loop (D-013): only when tools present AND the classifier says arithmetic
@@ -237,7 +254,7 @@ class QAPipeline:
             # Time for another ~CoT pass, is there? Below the margin -> the votes we have, settle for them.
             if candidates and guard.remaining() < self._SC_MIN_MARGIN_S:
                 break
-            sample = self.engine.generate(
+            sample = self._gen(
                 prompt, temperature=self.self_consistency_temperature
             )
             a, c = QAPipeline.parse_answer(sample, question)
@@ -286,7 +303,7 @@ class QAPipeline:
                 "computation in it -- list EVERY original number and let the tool add; pre-compute nothing.\n"
                 "No calculation needed? Then reply with ONLY the letter (A, B, C, or D)."
             )
-            first = self.engine.generate(offer)
+            first = self._gen(offer)
             call = _extract_first_json(first)
             if not call or call.get("name") != "calculator":
                 return None, None  # No tool call -- the cot_v2 answer, let it stand.

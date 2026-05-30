@@ -176,6 +176,22 @@ DEFAULT_ROUTING_POLICY: dict[ReasoningCategory, str] = {
 _FALLBACK_STRATEGY = "generic_cot"
 
 
+# The CONSERVATIVE policy for live Maths (notebook 03, comp 3). The offline experiment proved structured
+# enumeration fixes interval-counting (the clock-chime death, 0.4 -> 1.0) and helps temporal/discrete; it
+# did NOT test the formal-maths/stats questions the live Maths comp also throws (group theory, t-tests),
+# which the battle-tested `cot_v2` already handles. So we re-route ONLY the shapes we have evidence for,
+# and EVERYTHING ELSE (arithmetic, logic, concept/stats -> the fallback) stays on `cot_v2`. Minimal blast
+# radius, maximal targeting of the documented failure. Pair with max_new_tokens>=512 so the longer
+# structured chains reach their 'Answer:' line.
+MATHS_LIVE_POLICY: dict[ReasoningCategory, str] = {
+    ReasoningCategory.INTERVAL_COUNTING: "structured_enumeration_cot",
+    ReasoningCategory.TEMPORAL_REASONING: "structured_enumeration_cot",
+    ReasoningCategory.DISCRETE_ENUMERATION: "structured_enumeration_cot",
+    # arithmetic / logical / multi_hop / factual / commonsense -> the fallback (cot_v2), unchanged.
+}
+MATHS_LIVE_FALLBACK = "cot_v2"
+
+
 class ReasoningClassifier:
     """A question -> its reasoning shape, in a single cheap pass this decides.
 
