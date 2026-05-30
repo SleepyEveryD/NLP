@@ -14,6 +14,7 @@ experiments/runs/*
 data/*
 !data/.gitkeep
 !data/dev_questions.jsonl
+!data/reasoning_eval.jsonl
 *.faiss
 *.index
 
