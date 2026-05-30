@@ -1,6 +1,7 @@
 {
   "engine": "SimulatedReasoningEngine(FIXTURE-not-a-real-model)",
   "n_questions": 40,
+  "max_new_tokens": 512,
   "conditions": [
     {
       "name": "A_universal",
