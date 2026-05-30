@@ -1,0 +1,32 @@
+{
+  "engine": "SimulatedReasoningEngine(FIXTURE-not-a-real-model)",
+  "n_questions": 40,
+  "conditions": [
+    {
+      "name": "A_universal",
+      "description": "Single universal prompt (production few_shot_v1)",
+      "strategy": "few_shot_v1"
+    },
+    {
+      "name": "B_generic_cot",
+      "description": "Always generic chain-of-thought",
+      "strategy": "generic_cot"
+    },
+    {
+      "name": "C_structured",
+      "description": "Always structured enumeration",
+      "strategy": "structured_enumeration_cot"
+    },
+    {
+      "name": "D_adaptive",
+      "description": "Adaptive prompt routing (ReasoningRouter)",
+      "strategy": null
+    }
+  ],
+  "routing_policy": {
+    "A_universal": "few_shot_v1",
+    "B_generic_cot": "generic_cot",
+    "C_structured": "structured_enumeration_cot",
+    "D_adaptive": "ADAPTIVE"
+  }
+}

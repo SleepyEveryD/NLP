@@ -240,6 +240,144 @@ def _cot_maths_v1(question: Question, context: list[RetrievedDoc] | None) -> str
     return "\n".join(parts)
 
 
+# ===========================================================================
+# Adaptive-routing research strategies -- the four experimental conditions, these are.
+#
+# The adaptive prompt routing experiment (src/experiments/adaptive_routing.py) tests one claim:
+# a prompt that HELPS one reasoning category may HURT another. So four named, self-contained
+# strategies it needs -- each a deliberate point on the "how much explicit reasoning?" axis:
+#
+#   direct_answer               -- minimal reasoning (recall/commonsense; overthinking, it avoids).
+#   generic_cot                 -- plain "think step by step" (the universal CoT baseline).
+#   structured_enumeration_cot  -- enumerate every case/event, ordered, with boundary checks,
+#                                  count ONLY after listing (the clock-chime / interval-counting fix).
+#   checklist_cot               -- a verification checklist: assumptions, skipped cases, final
+#                                  cross-check against the options (logical / multi-hop questions).
+#
+# Distinct from cot_v2 they deliberately are: cot_v2 carries a HARD ≤3-step brevity cap (born of the
+# t-test LaTeX token-blowup) -- and that very cap is what made the model GUESS the clock-chime answer
+# before it had counted. These research strategies separate the two regimes the cap conflated.
+# ===========================================================================
+
+def _direct_answer(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """Concise, minimal-reasoning answer -- recall and commonsense, this serves.
+
+    The hypothesis it embodies: for factual recall and everyday judgement, explicit chains
+    HURT (they invite hallucinated justification and arithmetic drift on a non-arithmetic Q).
+    A single committed answer, demand we do -- no scratch-work the small model can wander in.
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Answer in as few words as possible -- the fact only, no explanation.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Answer immediately with ONLY the letter (A, B, C, or D). No reasoning, no "
+            "explanation, no punctuation -- the single letter alone."
+        )
+
+    return "\n".join(parts)
+
+
+def _generic_cot(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """The plain 'think step by step' baseline -- the universal CoT, this is.
+
+    NO brevity cap, NO option-matching directive, NO domain exemplars: the vanilla chain-of-thought
+    every paper reaches for first. The control against which the SPECIALISED chains (enumeration,
+    checklist) and the ADAPTIVE router are measured. Open questions, a brief free-text answer keep.
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Let's think step by step, then give the final answer in one sentence.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Let's think step by step. Work through the reasoning, then on a new line write "
+            "your final choice as 'Answer: X', where X is one of A, B, C, or D."
+        )
+
+    return "\n".join(parts)
+
+
+def _structured_enumeration_cot(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """Enumerate-first counting -- the clock-chime / interval-counting failure, this targets.
+
+    The motivating loss (qid 6712): "how many chimes between 5:10 and 7:35?" -- under cot_v2's ≤3-step
+    cap the model wrote "Step 2: count the chimes" and then GUESSED, never listing them. The cure is the
+    opposite of a brevity cap: force an explicit, ordered enumeration of EVERY case/event BEFORE any
+    count, and a boundary check on the endpoints (off-by-one, the classic counting bug it is).
+
+    For open questions, a brief free-text answer it keeps (enumeration suits options/counts, not prose).
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("List each relevant item or event in order, then give the answer in one sentence.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Solve by EXPLICIT ENUMERATION -- do NOT guess a total.\n"
+            "1. List EVERY relevant case/event/item ONE PER LINE, in order (chronological for times, "
+            "ascending for numbers). Write the value beside each.\n"
+            "2. Boundary check: state the first and last item that qualify, and confirm each endpoint "
+            "is inside the asked range (watch the off-by-one).\n"
+            "3. ONLY NOW add them up -- show the running total.\n"
+            "Then on a new line write 'Answer: X' (X = A, B, C, or D). Plain numbers only, no LaTeX."
+        )
+
+    return "\n".join(parts)
+
+
+def _checklist_cot(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """A verification checklist -- logical-reasoning and multi-hop questions, this serves.
+
+    The failure mode it answers: on "which of the following is true?" / multi-step questions the small
+    model commits early to a plausible option and never tests the OTHERS, nor cross-checks its chosen
+    option's buried details (the cot_v2 option-matching slip, generalised). So a checklist we impose:
+    restate, surface hidden assumptions, evaluate EACH option / hop, then validate the pick.
+
+    For open questions, a brief reasoned answer it keeps.
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append(
+            "Reason in a short checklist (what is asked / what is assumed / the conclusion), "
+            "then give the final answer in one sentence."
+        )
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Work through this checklist:\n"
+            "1. Restate what is being asked in one line.\n"
+            "2. List any assumptions or hidden constraints.\n"
+            "3. Evaluate EACH option (or EACH reasoning hop) in turn -- mark it true or false and why.\n"
+            "4. Validate: does the surviving option match EVERY detail (numbers, signs, scope), not just "
+            "the broad conclusion? Re-check any you skipped.\n"
+            "Then on a new line write 'Answer: X' (X = A, B, C, or D)."
+        )
+
+    return "\n".join(parts)
+
+
 # --- Strategy registry ---
 
 # A name -> builder function, this dict is.
@@ -250,6 +388,11 @@ _REGISTRY: dict[str, object] = {
     "cot_v1": _cot_v1,
     "cot_v2": _cot_v2,
     "cot_maths_v1": _cot_maths_v1,
+    # Adaptive-routing research conditions (src/experiments/adaptive_routing.py).
+    "direct_answer": _direct_answer,
+    "generic_cot": _generic_cot,
+    "structured_enumeration_cot": _structured_enumeration_cot,
+    "checklist_cot": _checklist_cot,
 }
 
 

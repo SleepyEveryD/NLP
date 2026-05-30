@@ -166,3 +166,158 @@ class TransformersEngine(LLMEngine):
         except Exception:
             # Warmup failure, ignore we do -- log nothing, so the caller's flow uninterrupted stays.
             pass
+
+
+# ===========================================================================
+# A deterministic simulated engine -- the adaptive-routing harness, WITHOUT a GPU it lets us run.
+#
+# !!! NOT a language model. A FIXTURE, this is. !!!
+# Its correctness comes from a hand-set skill table that ENCODES the experiment's hypothesis (structured
+# enumeration wins on counting; direct answering wins on recall; checklists win on logic). So any plot it
+# produces validates the PLUMBING of the experiment -- the routing, logging, metrics and figures -- and
+# NOT the real model. The real numbers, only the Colab Qwen run (TransformersEngine) yields them.
+# Use it for: local smoke tests, CI, and demonstrating the analysis end-to-end before the GPU run.
+# ===========================================================================
+
+import hashlib
+import re as _re
+
+from schemas import Question  # local import -- the heavy engine path above does not need it.
+
+
+# The hypothesis, as P(correct | true_category, strategy) in [0,1].
+# Read each ROW as "for this kind of reasoning, which prompt helps?" -- the diagonal of specialised
+# strengths (interval->structured, factual->direct, logic->checklist) is the whole bet, made explicit.
+_SIM_SKILL: dict[str, dict[str, float]] = {
+    # category                direct generic structured checklist few_shot(universal)
+    "arithmetic":            {"direct_answer": 0.45, "generic_cot": 0.80, "structured_enumeration_cot": 0.70, "checklist_cot": 0.72, "few_shot_v1": 0.65},
+    "temporal_reasoning":    {"direct_answer": 0.40, "generic_cot": 0.58, "structured_enumeration_cot": 0.80, "checklist_cot": 0.60, "few_shot_v1": 0.50},
+    "interval_counting":     {"direct_answer": 0.25, "generic_cot": 0.45, "structured_enumeration_cot": 0.85, "checklist_cot": 0.55, "few_shot_v1": 0.40},
+    "discrete_enumeration":  {"direct_answer": 0.35, "generic_cot": 0.55, "structured_enumeration_cot": 0.82, "checklist_cot": 0.60, "few_shot_v1": 0.50},
+    "factual_qa":            {"direct_answer": 0.82, "generic_cot": 0.70, "structured_enumeration_cot": 0.55, "checklist_cot": 0.62, "few_shot_v1": 0.80},
+    "commonsense":           {"direct_answer": 0.78, "generic_cot": 0.68, "structured_enumeration_cot": 0.55, "checklist_cot": 0.65, "few_shot_v1": 0.74},
+    "logical_reasoning":     {"direct_answer": 0.45, "generic_cot": 0.62, "structured_enumeration_cot": 0.58, "checklist_cot": 0.80, "few_shot_v1": 0.58},
+    "multi_hop":             {"direct_answer": 0.40, "generic_cot": 0.60, "structured_enumeration_cot": 0.55, "checklist_cot": 0.78, "few_shot_v1": 0.55},
+}
+
+# Typical generated length per strategy (in "tokens"), the simulator uses -- so the reasoning-length and
+# latency figures show the real trade-off: verbose chains cost time. (~11 tok/s, the Qwen-7B-4bit rate.)
+_SIM_TOKENS: dict[str, int] = {
+    "direct_answer": 4,
+    "generic_cot": 55,
+    "structured_enumeration_cot": 140,
+    "checklist_cot": 115,
+    "few_shot_v1": 8,
+}
+_SIM_TOK_PER_S: float = 11.0   # Decode speed the latency simulation assumes (the documented Qwen-4bit rate).
+
+# Prompt-directive signatures -> the canonical strategy name (for the skill-table lookup).
+_SIM_STRATEGY_SIGNATURES: list[tuple[str, str]] = [
+    ("EXPLICIT ENUMERATION", "structured_enumeration_cot"),
+    ("Work through this checklist", "checklist_cot"),
+    ("Answer immediately with ONLY the letter", "direct_answer"),
+    ("Reply with ONLY the letter", "direct_answer"),
+    ("Let's think step by step", "generic_cot"),
+    ("Think step by step briefly", "generic_cot"),
+    ("Solve in AT MOST 3", "generic_cot"),       # cot_v2 family -> treat as a generic chain.
+    ("Answer with ONLY the letter", "few_shot_v1"),
+]
+
+
+class SimulatedReasoningEngine(LLMEngine):
+    """A deterministic stand-in for the LLM -- the routing harness end-to-end, locally it exercises.
+
+    Given the dataset up front (so it knows each question's gold letter and TRUE reasoning category), it:
+      * reads the strategy from the prompt's directives,
+      * looks up P(correct | true_category, strategy) in `_SIM_SKILL`,
+      * decides correctness DETERMINISTICALLY (a stable hash of the qid, not RNG -- reproducible runs),
+      * emits strategy-flavoured text of a realistic length, and a simulated decode latency.
+
+    A fixture it is, not a model -- see the module banner above. `name` says so, loudly.
+    """
+
+    name = "SimulatedReasoningEngine(FIXTURE-not-a-real-model)"
+
+    def __init__(self, questions: list[Question], categories: dict[str, str]):
+        """
+        Args:
+            questions:  the eval set -- gold letters and a text->qid index, from these we build.
+            categories: qid -> TRUE reasoning-category label (drives the skill table).
+        """
+        self.last_tokens_in = 0
+        self.last_tokens_out = 0
+        self.last_latency_s = 0.0   # The runner prefers this over wall-clock when present (a fixture, we are).
+        self._gold: dict[str, str] = {q.qid: (q.gold or "A") for q in questions}
+        self._opts: dict[str, list[str]] = {q.qid: sorted(q.options.keys()) for q in questions}
+        self._cat: dict[str, str] = dict(categories)
+        # A normalised question-text -> qid index, so from the prompt the question we can recover.
+        self._text_to_qid: dict[str, str] = {self._norm(q.text): q.qid for q in questions}
+
+    @staticmethod
+    def _norm(text: str) -> str:
+        # Lowercase, collapse whitespace -- a stable lookup key from a question's text, this makes.
+        return _re.sub(r"\s+", " ", (text or "").strip().lower())
+
+    def _strategy_of(self, prompt: str) -> str:
+        for needle, strat in _SIM_STRATEGY_SIGNATURES:
+            if needle in prompt:
+                return strat
+        return "generic_cot"   # Unknown directives -> a plain chain, assume we do.
+
+    def _qid_of(self, prompt: str) -> str | None:
+        # The LAST "Question:" line is the real one (few-shot prepends exemplars before it).
+        matches = _re.findall(r"Question:\s*(.+)", prompt)
+        if not matches:
+            return None
+        return self._text_to_qid.get(self._norm(matches[-1]))
+
+    @staticmethod
+    def _score(qid: str, strategy: str) -> float:
+        # A stable pseudo-score in [0,1) -- md5 over (qid, strategy), so process-independent it is.
+        h = hashlib.md5(f"{qid}|{strategy}".encode()).hexdigest()
+        return (int(h[:8], 16) % 10_000) / 10_000.0
+
+    def generate(self, prompt: str, max_new_tokens: int = 256, temperature: float = 0.0) -> str:
+        strategy = self._strategy_of(prompt)
+        qid = self._qid_of(prompt)
+
+        self.last_tokens_in = len(prompt.split())
+        n_out = _SIM_TOKENS.get(strategy, 40)
+        self.last_tokens_out = n_out
+        self.last_latency_s = n_out / _SIM_TOK_PER_S
+
+        # Unknown question (text not in the index) -> a harmless default, return we do.
+        if qid is None:
+            return "Answer: A"
+
+        gold = self._gold.get(qid, "A")
+        cat = self._cat.get(qid, "commonsense")
+        skill = _SIM_SKILL.get(cat, {}).get(strategy, 0.5)
+        correct = self._score(qid, strategy) < skill
+
+        if correct:
+            letter = gold
+        else:
+            # A deterministic WRONG letter -- the next available option after gold, wrapping around.
+            opts = self._opts.get(qid) or ["A", "B", "C", "D"]
+            others = [o for o in opts if o != gold] or ["A"]
+            letter = others[int(self._score(qid, strategy) * len(others)) % len(others)]
+
+        # Strategy-flavoured filler, so the reasoning-LENGTH metric reflects the real verbosity gap.
+        body = {
+            "direct_answer": "",
+            "few_shot_v1": "",
+            "generic_cot": "Step 1: consider the question.\nStep 2: reason it through.\n",
+            "structured_enumeration_cot": (
+                "Enumerate:\n- item 1\n- item 2\n- item 3\nBoundary check: endpoints inside range.\n"
+                "Running total computed.\n"
+            ),
+            "checklist_cot": (
+                "1. Restated.\n2. Assumptions listed.\n3. Each option evaluated.\n4. Validated against details.\n"
+            ),
+        }.get(strategy, "")
+        return f"{body}Answer: {letter}"
+
+    def warmup(self) -> None:
+        # A fixture -- nothing to warm. A no-op, this is.
+        return None
