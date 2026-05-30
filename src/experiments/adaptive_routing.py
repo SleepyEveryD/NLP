@@ -128,11 +128,17 @@ class AdaptiveRoutingExperiment:
         router: ReasoningRouter | None = None,
         conditions: list[Condition] | None = None,
         out_dir: str = "experiments/adaptive_routing",
+        max_new_tokens: int = 512,
     ):
         self.engine = engine
         self.router = router or ReasoningRouter()
         self.conditions = conditions or DEFAULT_CONDITIONS
         self.out_dir = Path(out_dir)
+        # The generation cap. 256 (the engine default) TRUNCATED the verbose chains before they reached
+        # the 'Answer:' line -- the dominant `no_answer_parsed` failure for generic_cot/few_shot. With the
+        # game's 130s/question budget, 512 (~46s at the 11 tok/s 4-bit rate) is comfortably affordable and
+        # lets every chain finish. Pass a larger value if even structured chains truncate.
+        self.max_new_tokens = int(max_new_tokens)
         # PromptBuilders, cached per strategy -- cheap, but reuse them we may as well.
         self._builders: dict[str, PromptBuilder] = {}
 
@@ -158,7 +164,7 @@ class AdaptiveRoutingExperiment:
         error: Optional[str] = None
         start = time.perf_counter()
         try:
-            raw = self.engine.generate(prompt)
+            raw = self.engine.generate(prompt, max_new_tokens=self.max_new_tokens)
         except Exception as e:   # A generation crash -- the row we still write, the error noted.
             error = f"{type(e).__name__}: {e}"
         elapsed = time.perf_counter() - start
@@ -231,6 +237,7 @@ class AdaptiveRoutingExperiment:
                 {
                     "engine": getattr(self.engine, "name", "unknown"),
                     "n_questions": len(questions),
+                    "max_new_tokens": self.max_new_tokens,
                     "conditions": [asdict(c) for c in self.conditions],
                     "routing_policy": {
                         c.name: (c.strategy or "ADAPTIVE") for c in self.conditions
