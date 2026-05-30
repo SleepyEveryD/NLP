@@ -173,6 +173,73 @@ def _cot_v2(question: Question, context: list[RetrievedDoc] | None) -> str:
     return "\n".join(parts)
 
 
+# Maths-only worked exemplars -- the RATIO/PROPORTION setup, they teach (Q6777, level-2 ratio fail).
+# The first example NO numbers in the question carries -- so introducing variables, it demonstrates
+# (the live failure mode: the model picked a ratio-like number without setting up s/p first). The
+# second a plain arithmetic case is, the format generality it preserves.
+_MATHS_EXAMPLES = [
+    (
+        "Yesterday, a worker took three times as long to finish a task and produced half as many "
+        "items. The worker's items-per-hour rate today is what percent of yesterday's rate?",
+        {"A": "150", "B": "200", "C": "300", "D": "600"},
+        "Let today hours=h, items=i; yesterday hours=3h, items=i/2.\n"
+        "Today rate = i/h. Yesterday rate = (i/2)/(3h) = i/(6h).\n"
+        "Today / Yesterday = (i/h) / (i/(6h)) = 6, so 600%.\n"
+        "Answer: D",
+    ),
+    (
+        "If a rectangle has length 15 cm and width 8 cm, what is its area in square centimetres?",
+        {"A": "46", "B": "90", "C": "120", "D": "160"},
+        "Area = length x width = 15 x 8 = 120.\n"
+        "Answer: C",
+    ),
+]
+
+
+def _cot_maths_v1(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """cot_v2 + two worked Maths exemplars -- the level-2 ratio fail (Q6777), this targets.
+
+    Q6777 ("computer speed-to-price ratio is what percent...") the model answered B (32) instead
+    of D (400) because cot_v2 ALONE never set up variables: the question carries NO numbers, so
+    without an example to anchor the "let s=..., p=..." move, the chain skipped straight to a
+    plausible-looking number. Two exemplars we prepend:
+      * a ratio question with NO numbers (introduce variables, then compute) -- Q6777's mode.
+      * a plain area calculation -- the format on simple arithmetic, also it covers.
+    The directives stay cot_v2's (brevity cap + option-matching + 'Answer:' must be reached).
+    For open questions, identical to cot_v1 it stays (no options).
+    """
+    parts: list[str] = []
+
+    # Context block, only when evidence exists, prepend we do (Maths usually has none).
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Think briefly, then answer in one or two sentences.")
+        return "\n".join(parts)
+
+    # The worked Maths exemplars, first they come -- the reasoning shape, they teach.
+    for ex_text, ex_opts, ex_solution in _MATHS_EXAMPLES:
+        parts.append(_render_mcq(ex_text, ex_opts))
+        parts.append(ex_solution)
+        parts.append("")  # A blank line between examples, separation it gives.
+
+    # The real question, last it stands.
+    parts.append(_render_mcq(question.text, question.options))
+    parts.append(
+        "Solve in AT MOST 3 very short steps. If the question has no numbers, introduce "
+        "variables (e.g. let s = speed, p = price) and write the relationships first. "
+        "Plain numbers ONLY -- NO LaTeX, no \\frac, no \\mu/\\sigma, no $...$; write "
+        "'mu'/'sigma' as words and keep each step under ~12 words. When two options share "
+        "the same conclusion, pick the one whose numbers (values, signs, degrees of freedom) "
+        "match your result EXACTLY -- not just the conclusion. You MUST end on a new line with "
+        "'Answer: X' (X = A, B, C, or D) -- always reach that line."
+    )
+
+    return "\n".join(parts)
+
+
 # --- Strategy registry ---
 
 # A name -> builder function, this dict is.
@@ -182,6 +249,7 @@ _REGISTRY: dict[str, object] = {
     "few_shot_v1": _few_shot_v1,
     "cot_v1": _cot_v1,
     "cot_v2": _cot_v2,
+    "cot_maths_v1": _cot_maths_v1,
 }
 
 
