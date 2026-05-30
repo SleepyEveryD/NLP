@@ -154,8 +154,19 @@ def classify_failure(row: pd.Series) -> str | None:
     cat = row.get("true_category", "")
     raw = str(row.get("raw_output", ""))
     lines = row.get("reasoning_lines", 0) or 0
+    strategy = row.get("strategy", "")
+    conf = row.get("confidence", None)
 
-    if not _NO_ANSWER_RE.search(raw):
+    # A genuine parse failure -- NOT merely "the raw lacks an 'Answer:' string". The bare-letter
+    # strategies (direct_answer / few_shot_v1) are SUPPOSED to omit it, and they parse fine, so the
+    # old "no 'answer:' -> no_answer_parsed" rule mislabelled EVERY wrong few-shot row. The honest
+    # signal is the parser's own fallback: `parse_answer` returns confidence 0.0 ONLY when no letter
+    # could be extracted at all. We also flag a CoT strategy that never wrote an 'Answer:' line
+    # (truncation) -- there the missing marker IS the failure.
+    _COT = {"generic_cot", "structured_enumeration_cot", "checklist_cot", "cot_v1", "cot_v2", "cot_maths_v1"}
+    if conf is not None and float(conf) == 0.0:
+        return "no_answer_parsed"
+    if strategy in _COT and not _NO_ANSWER_RE.search(raw):
         return "no_answer_parsed"
     if cat in ("factual_qa", "commonsense"):
         return "overthinking" if lines >= 3 else "hallucinated/other"
