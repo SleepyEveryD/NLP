@@ -247,3 +247,148 @@ _(track each official run here: date, config used, final prize/level reached, ob
        routing at a glance (comp 3 should be `strat=cot_v1` + `retr=False`; every other comp `few_shot_v1`).
 - NEXT: CLEAN re-run (the "w" fix truncates stale dirs on open; or `rm -rf experiments/runs/live_comp*` first to be sure).
   Then read comp 3: `strat=cot_v1` + `retr=False` confirms routing; does Maths finally climb past lb 3?
+- UPDATE 2026-05-27 (`4-rag`): Maths comp 3 now uses **self-consistency** (D-016) — `cot_v1` +
+  `self_consistency_n=3` (T=0.7), majority-voted; calculator skipped under SC. `majority_vote` implemented in
+  `agent/voting.py`. So the clean run also checks comp 3 = `tool=None` (SC skips the tool) and `confidence`
+  reads as a vote share (e.g. 0.67/1.0), not the old flat 1.0. THE question for run #7: Maths past lb 3, or not?
+
+### live_comp0..5 (run #7) — self-consistency RUNS but does NOT lift Maths (the t-test df error)
+- Date / commit:         2026-05-27 · branch **`mathonly`** (code `7402281` "math voting"; the run dumped as
+  the message of commit `2ce535a`). ⚠️ The SC code is on `mathonly`, NOT on `4-rag` — the Colab notebook's
+  `BRANCH` was switched to `'mathonly'` to pick it up (pulling `4-rag` first gave
+  `QAPipeline.__init__() got an unexpected keyword argument 'self_consistency_n'`). MERGE/align before the final run.
+- Config:                comps 0,1,2,4,5 → few_shot_v1 + calculator + routed RAG. comp 3 → `pipeline_maths`
+  = cot_v1 + **`self_consistency_n=3` (T=0.7)** + NO retrieval + tool skipped under SC. RAG `source="routed"`.
+- Accuracy:              **overall 37/42 = 88.1%** (graded; tracks the usual ~87%). 5 wrong. ⚠️ small-N per comp
+  (each game ends at its first wrong, so Ent/Maths only 1 graded each — noise).
+- THIS-RUN climb vs ALL-TIME best (read BOTH columns — `run_reached` ≠ `lb_level`; do NOT conflate):
+  Ent run **0**/lb 15 · Ancient run **6**/lb 15 · Science run **14**/lb 14 · Maths run **0**/lb 3 ·
+  Philosophy run **15**/lb 15 · News run **2**/lb 5. Only Philosophy(15) + Science(14) TOUCHED their all-time
+  best THIS run (Science 13→14, likely set here); Ancient(6)/Ent(0, died Q1) fell short of their historical 15.
+- ✅ SC VERIFIED MECHANICALLY (D-016 plumbing works): comp 3 detail = `strat=cot_v1 · tool=None · retr=False`
+  (Counter `prompt_strategy={cot_v1:1}`). Routing-by-competition_id + the vote both fired as designed.
+- ❌ SC did NOT help Maths — and the RAW CHAIN (records.jsonl, recovered) REVISES the cause (an earlier note here
+  wrongly called it a "systematic df=n vs n−1 concept error" — IT IS NOT). qid 6702 (AP-stats t-test, n=18, t=−1.973).
+  The model's CoT was **CORRECT**: *"critical t for 17 degrees of freedom (n−1 = 18−1 = 17) ... ≈ ±2.110"* — i.e. it
+  DERIVED option **C**'s content. It then wrote **"Answer: B"**. B and C are WORD-FOR-WORD identical except B says
+  df=**18**, C says df=**17**; both say "do not reject". The model latched onto the shared CONCLUSION and grabbed B
+  (first of the two) **without cross-checking that B's df contradicts its own Step-1 (17)**. So: NOT a knowledge gap
+  (it knew df=n−1 and ±2.110) — an **OPTION-MATCHING slip on near-identical distractors**. `confidence=1.0` ⇒ all 3
+  chains voted B (the SAME slip), so SC (kills RANDOM noise) couldn't help. IMPLICATION (more tractable than a ceiling):
+  a PROMPT fix is plausible — instruct cot to "pick the option whose stated numbers/df MATCH your computed ones, not
+  just the conclusion." Maths died at Q1 → run_reached 0; lb still 3 (N=1, no signal above lvl 1). Great rubric example:
+  *the model solves the stats but mis-selects when two options differ only in a buried detail.*
+- ⚠️ LATENCY: the Maths Q took **20.7s** (3 CoT chains) — the sweep's MAX (every other turn ~1.5s). Under the
+  25s aim but TIGHT; a longer chain on a harder Maths Q could breach 25s/the 30s wall. (My ~12s estimate was low —
+  cot_v1 generates up to 256 tokens/chain.) Watch it; consider a per-chain `max_new_tokens` cap if SC stays on Maths.
+- News: lb **5** (↑ from run #5's 3). All 3 News `retr=True docs=3`. The MISS (qid 10470, "2026-05-14, which
+  company's first annual loss in 70 years") retrieved GARBAGE — `['List of Falcon 9...','LeBron James','Reform UK']`
+  (Wikipedia pages). I.e. DDG returned EMPTY → fell back to Wikipedia with a junk query → irrelevant pages → wrong.
+  RESIDUAL = the web-empty fallback QUALITY (same as run #5 finding #2). The other 2 News landed + were correct.
+- Other misses (all hard/high-level or unlucky Q1 — NOT systemic): Ent 136 (Bogart birth-date trivia, Q1, retr=False) ·
+  Ancient 945 (Athens etymology 'Athênai' vs 'Athênē', lvl 6) · Science 2439 (Landau superfluidity → picked BEC, lvl 14).
+- NEXT: SC is no Maths silver bullet (systematic concept errors). Higher-value plays: (1) **News web-empty fallback
+  quality** (lb still climbing 3→5 — best marginal return); (2) accept the 7B graduate/AP-Maths ceiling, OR try n=5 /
+  a stronger maths prompt (but a systematic df error needs reasoning quality, not more votes). Also: **align `mathonly`
+  → `4-rag`** so the final-run notebook (BRANCH='4-rag') carries the SC code.
+
+### live_comp0..5 (run #8) — cot_v2 SOLVES Maths but SC TIMES OUT (41s); Science MAXED (15); News residual reconfirmed
+- Date / commit:         2026-05-27 · branch `mathonly` (code `c8e87e0` "add 选项核对指令" = cot_v2; run dumped as a commit msg).
+- Config:                comps 0,1,2,4,5 → few_shot_v1 + calculator + routed RAG. comp 3 → `pipeline_maths`
+  = **cot_v2** (cot_v1 + option-matching check) + **`self_consistency_n=3` (T=0.7)** + NO retrieval + tool skipped under SC.
+- Accuracy:              **overall 24/28 = 85.7%** (graded). The Maths Q is EXCLUDED (timed out → correct=None), so Maths shows of=0.
+- THIS-RUN climb / ALL-TIME best (`run_reached` / `lb_level`): Ent 2/15 · Ancient 1/15 · **Science 15/15** · Maths 0/3 ·
+  Philosophy 4/15 · News 2/5. **Science MAXED at 15 this run (lb 14→15, score 1024000).** Now FOUR comps at lb 15
+  (Ent, Ancient, Science, Philosophy); only **Maths (3)** and **News (5)** remain below.
+- 🔴 THE HEADLINE — Maths qid 6908 ("group (G,∘) is abelian, which is TRUE?"): the model picked **D**
+  `(g∘h)²=g²∘h²`, which **IS the correct answer** (raw_output = a clean proof: abelian ⇒ g∘h∘g∘h = g∘g∘h∘h).
+  BUT latency=**41.0s** → `timed_out=True`, `correct=None` → counted as a LOSS. **We answered it right and lost it to a
+  TIMEOUT.** So cot_v2 fixed BOTH the reasoning AND the option-matching (run #7's slip) — Maths is now **LATENCY-bound,
+  NOT reasoning-bound.** Cause: cot_v2 chains are ~235 tok (~20s each, 2.4× cot_v1's 98); SC ran 2 chains = 41s; the
+  budget guard's flat 5s margin green-lit a 2nd chain it couldn't finish. SC also gave NO accuracy benefit (run #7).
+- News: lb **5**. qid 10512 ("2026-05-13 tech giant's cartoon mascot 'Mico'", gold = Microsoft) → picked Google;
+  `retr=True docs=3` but the docs were `['Mico (singer)','Mico','Marmoset']` — DDG EMPTY → Wikipedia fallback pulled
+  topical GARBAGE (a singer, a marmoset monkey). **2nd confirmation** (run #7 = Falcon9/LeBron) of the web-empty residual.
+- Other graded misses (hard/obscure, retr=False): Ent 76 (Spielberg–Michael Kahn editor trivia, lvl2) · Ancient 841
+  ("Homeric Question" term, lvl1) · Philosophy 9190 (prima facie LITERAL translation — picked the idiomatic "on the face of it", lvl4).
+- FIX APPLIED (this session, user picked "fix #1"): `pipeline_maths` → **cot_v2 single-pass (n=1)** + `retriever=None`
+  + **`tools=None`**. SC dropped (timed out, no benefit). tools OFF because at n=1 the tool stage is NOT auto-skipped,
+  and a stats Q's "5%" trips `needs_calculator` → the calculator would re-answer from the BARE MCQ and CLOBBER cot_v2's
+  reasoning. A single cot_v2 pass ≈ 20s (run #8's 41s was 2 chains) → fits the 30s wall. The defensive SC-guard fix
+  (reserve the longest-chain time, not a flat 5s) was NOT applied — SC is now unused on Maths, so it's moot for the live run.
+- NEXT: re-run → with the in-time correct answer, does Maths finally climb past **lb 3**? (cot_v2 single-pass should land
+  ~20s.) News web-empty fallback quality is still the top RAG lever. Align `mathonly` → `4-rag` before the final run.
+
+### live_comp0..5 (run #9) — cot_v2 single-pass BREAKS the Maths ceiling (lb 3→7); the one miss is TOKEN TRUNCATION
+- Date / commit:         2026-05-27 · branch `mathonly` (code `0f9c824` "remove voting to reduce the time"; run dumped as commit `a24629d`).
+- Config:                comps 0,1,2,4,5 → few_shot_v1 + calculator + routed RAG. comp 3 → `pipeline_maths`
+  = **cot_v2 single-pass (n=1)** + NO retrieval + **NO calculator** (the run-#8 fix: SC dropped, tools off so a stats "%" can't clobber cot_v2).
+- Accuracy:              **overall 26/32 = 81.2%** (graded). Maths **7/8 = 0.875**.
+- THIS-RUN climb / ALL-TIME best (`run_reached` / `lb_level`, `lb_score`): Ent 6/15 (1024000) · Ancient 0/15 (1024000) ·
+  Science 13/15 (1024000) · **Maths 7/7 (4000)** · Philosophy 0/15 (1024000) · News 0/5 (1000).
+- 🟢 THE HEADLINE — **Maths broke past lb 3 for the first time: lb 3 → 7** (run_reached 7, score 300→4000). The run-#8
+  fix (cot_v2 single-pass, n=1, no tool) WORKED: 7 of 8 Maths Qs correct, latencies 5.1–23.1s (all under the 30s wall,
+  no timeout — unlike run #8's 41s SC blowup). cot_v2 reasoning is sound AND in-budget when it's a single pass.
+- ❌ THE ONE MISS (qid 6706, lvl reached 7) — **NOT a reasoning error, NOT the run-#7 option-matching slip: it is TOKEN
+  TRUNCATION.** Q: trucks normally distributed, P(>12000)=0.70 & P(>10000)=0.80 → find μ, σ. The model's CoT was
+  CORRECT — it set up z(30th pct)=−0.524, z(20th pct)=−0.842 and the two equations (12000−μ)/σ=−0.524,
+  (10000−μ)/σ=−0.842. Solving gives σ≈6300, μ≈15,300 → **gold = D**. BUT `tokens_out=256` = the engine's
+  `max_new_tokens` default (engine.py:99; pipeline.py:148 calls `generate(prompt)` WITHOUT passing
+  config.model.max_new_tokens, so the YAML's 256 is never wired — the 256 cap is the hardcoded default, coincidentally equal).
+  `raw_output` ends mid-algebra at **"- From"** — the cap hit BEFORE the "Answer: X" line. With no answer marker,
+  `parse_answer` patterns 1–7 all miss → the last-resort fallback (pipeline.py:408) submits `sorted(options)[0]` = **"A"**
+  at **confidence=0.0** (the record confirms: predicted "A", conf 0.0). So the model never "chose" A — it ran out of tokens
+  and the parser blind-defaulted. A NEW Maths failure mode: the chain is correct but too verbose to finish in 256 tokens.
+- ⚠️ LATENCY CAUTION on the naive fix: this turn was **23.1s for 256 tokens ≈ 11 tok/s**. Finishing the solve + "Answer: D"
+  needs ~120–180 more tokens ≈ +11–16s → would BREACH the 30s wall. So simply raising `max_new_tokens` trades a
+  truncation-loss for a TIMEOUT-loss (run #8's lesson). The chain must reach the answer FASTER, not just longer.
+- Other graded misses (game ends at first wrong → each comp 1 graded after its climb, all noise/known): Ent (1 wrong after
+  6 right, reached 6) · Ancient 884 (Neo-Assyrian "largest empire" factor, reached 0, retr=False) · Science (1 wrong after
+  13 right, reached 13) · Philosophy 8727 (left-conservatism def, reached 0) · News 11552 (Cavs–Pistons 2026-05-18 score,
+  retr=True docs=3 but Wikipedia-fallback junk — the web-empty residual again).
+- NEXT (Maths, to convert 7→higher): make cot_v2 reach "Answer: X" inside budget — (a) tighten the prompt so reasoning is
+  genuinely terse / answer-first / NO LaTeX (it ignored "one or two short sentences" and wrote ~5 paragraphs of \frac/\mu);
+  and/or (b) modestly raise the cap AND wire config.model.max_new_tokens through pipeline→engine, watching the 30s wall.
+  News web-empty fallback quality still the top RAG lever. Align `mathonly` → `4-rag` before the final run.
+
+### live_comp3 (run #10) — cot_v2 TIGHTENED: truncation FIXED, but bare ARITHMETIC errors now surface
+- Date / commit:         2026-05-27 · branch `mathonly` (cot_v2 prompt tightened: "AT MOST 3 very short steps, plain
+  numbers ONLY, NO LaTeX, MUST end with 'Answer: X'"). The run-#9 fix #(a). Only the comp-3 record for qid 6679 seen
+  (+ its reached_level), not the full sweep scoreboard — so this entry is the Maths read only.
+- Config:                comp 3 → `pipeline_maths` = cot_v2 single-pass (n=1) + NO retrieval + NO calculator. Same wiring
+  as run #9; ONLY the cot_v2 instruction text changed (src/prompting/builder.py::_cot_v2).
+- ✅ THE FORMAT FIX WORKED (the run-#9 truncation cured): qid 6679 (mean of ten scores) — `tokens_out=75` (was 256 at the
+  cap), `latency=7.6s` (was 23.1s), raw = a clean 2-step chain with NO LaTeX ending in "Answer: C", `confidence=1.0`
+  (pattern-1 "Answer:" matched, not the 0.0 blind fallback). Maths `reached_level=9` — UP from run #9's 7, so the terser
+  chains let it answer more in-time and climb further. The 256-token truncation failure mode is SOLVED.
+- ❌ NEW FAILURE MODE — bare arithmetic error (NOT format, NOT truncation, NOT the run-#7 option-matching slip): qid 6679
+  scores 45,55,50,70,65,80,40,90,70,85. The model's STRUCTURE was right (mean = sum/10) but it summed to **620** instead
+  of **650** (off by 30) → mean 62 → picked **C**. Correct sum 650 → mean 65 → **gold D**. A 7B cannot reliably add ten
+  2-digit numbers in its head; cot_v2 (concise + correct method) CANNOT save a hand-arithmetic slip. It is now CONFIDENTLY
+  wrong (conf 1.0) where 6706 was a 0.0 fallback.
+- THE FIX FOR THIS = the calculator, and `needs_calculator(6679)` ALREADY returns True (the question says "mean of" →
+  `_CALC_WORD_CUES_RE` matches `mean\s+of`, classifier.py:230). But Maths has `tools=None` (run #8: the calc re-answers
+  from the BARE MCQ, discarding cot_v2 — helps pure-arithmetic Qs like 6679, HURTS concept/stats Qs where it falsely fires).
+- PROPOSED (run #11, fix #b done RIGHT — avoids the run-#8 clobber): re-enable `tools=default_tools()` for `pipeline_maths`,
+  AND change the override rule so the calculator result REPLACES cot_v2's answer ONLY when the computed number matches an
+  option's numeric value (e.g. 6679: calc 65 == option D "65" → take D). On a t-test the calc result won't equal any option
+  text ("do not reject; df=17") → cot_v2 is KEPT. A clean discriminator: "the answer IS a number" vs "the answer is a
+  conclusion that uses a number". Inverse-normal Qs (6706) still need the model's z-values; the calc only does the algebra.
+- NEXT: implement the match-an-option override + re-enable calc for Maths → re-run comp 3 → expect 6679→D. Watch the other
+  ~7 Maths Qs (does the LaTeX ban / 3-step cap hold their accuracy? does the calc override never fire wrongly on them?).
+- FULL SWEEP SEEN (same run #10, now the whole scoreboard — cot_v2-tightened, calculator STILL off): OVERALL **34/40 = 85.0%**.
+  Per comp (answered/correct/run_reached/lb_level/lb_score): Ent 3/2/2/15/1024000 · Ancient 7/6/6/15/1024000 ·
+  Science 4/3/3/15/1024000 · **Maths 10/9/9/9/16000** · Philosophy 10/9/9/15/1024000 · News 6/5/5/5/1000.
+  🟢 **MATHS lb 7 → 9** (score 4000→16000) — the cot_v2 TIGHTEN delivered: all 10 Maths Qs ran cot_v2/tool=None, latencies
+  **3.3–10.9s** (NO truncation, NO timeout), **9 correct**. The ONLY Maths miss is qid 6679 (the arithmetic slip) — exactly
+  the calculator-verifier's target. (Science lb→15 maxed; now FOUR comps at lb 15: Ent, Ancient, Science, Philosophy.)
+  Other misses (recall/concept/news — NOT Maths-arithmetic): Ent 563 (Downfall extended-cut reason, retr=False) · Ancient
+  1026 (Ancient Greek 3-way stop distinction = voiced/aspirated/unaspirated B; we picked C; retr landed 3 docs but still
+  wrong — a linguistics detail) · Science 3303 (CuO compound DIFFERS from Cu/O elements = D; we picked C) · Philosophy 8052
+  (Kenneth Waltz on imperialism) · News 11871 (Honda hit 2026-05-14; retr=True docs=['Honda','Honda Civic','Honda Accord']
+  = DDG-empty→Wikipedia junk — the web-empty residual, 3rd confirmation after runs #7/#8).
+- ✅ CALCULATOR-VERIFIER IMPLEMENTED (D-017, this session, branch `mathonly`, NOT yet pushed/run): `pipeline.py`
+  `_run_calculator_tool` rewritten — single offer-generation, then `_option_for_value` maps the result to an option and
+  OVERRIDES cot_v2 ONLY on a unique within-0.5% numeric match (else keep cot_v2). Notebook `pipeline_maths` now
+  `tools=default_tools()`. ⚠️ RISK to watch on the re-run: the verifier could FLIP one of the current 9 correct Maths Qs if
+  the calc fires and its number coincidentally matches a wrong option — the 0.5%-unique gate is the guard, but verify the 9 hold.

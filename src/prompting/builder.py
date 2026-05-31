@@ -134,6 +134,289 @@ def _cot_v1(question: Question, context: list[RetrievedDoc] | None) -> str:
     return "\n".join(parts)
 
 
+def _cot_v2(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """cot_v1 + an OPTION-MATCHING check + a HARD brevity cap, this is.
+
+    Two motivating failures, this prompt answers:
+      * run #7, qid 6702 (the OPTION-MATCHING slip): on a t-test MCQ the model REASONED correctly
+        (df=17, ±2.110 -- option C's content) yet wrote 'Answer: B', whose only flaw was 'df=18'.
+        B and C SHARED the conclusion ('do not reject'); the model matched the conclusion alone and
+        never cross-checked the buried number against its own work. So: verify the chosen option
+        matches EVERY computed detail -- not the conclusion only.
+      * run #9, qid 6706 (the TRUNCATION loss): the model's set-up was CORRECT (z=-0.524/-0.842,
+        the two equations) but it wrote ~5 paragraphs of LaTeX and hit the 256-token cap BEFORE the
+        'Answer:' line -- so the parser fell back to a blind 'A'. At ~11 tok/s the 256 cap ≈ the 25s
+        wall, so MORE tokens would only time out. The cure is FEWER tokens to the answer: cap the
+        steps, BAN LaTeX (the token hog -- \\frac/\\mu/$...$ tripled the length), and DEMAND the
+        'Answer:' line always be reached.
+    For open questions, identical to cot_v1 it stays (no options).
+    """
+    parts: list[str] = []
+
+    # Context block, only when evidence exists, prepend we do.
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Think briefly, then answer in one or two sentences.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Solve in AT MOST 3 very short steps. Plain numbers ONLY -- NO LaTeX, no \\frac, "
+            "no \\mu/\\sigma, no $...$; write 'mu'/'sigma' as words and keep each step under ~12 "
+            "words. When two options share the same conclusion, pick the one whose numbers (values, "
+            "signs, degrees of freedom) match your result EXACTLY -- not just the conclusion. You "
+            "MUST end on a new line with 'Answer: X' (X = A, B, C, or D) -- always reach that line."
+        )
+
+    return "\n".join(parts)
+
+
+# Maths-only worked exemplars -- the RATIO/PROPORTION setup, they teach (Q6777, level-2 ratio fail).
+# The first example NO numbers in the question carries -- so introducing variables, it demonstrates
+# (the live failure mode: the model picked a ratio-like number without setting up s/p first). The
+# second a plain arithmetic case is, the format generality it preserves.
+_MATHS_EXAMPLES = [
+    (
+        "Yesterday, a worker took three times as long to finish a task and produced half as many "
+        "items. The worker's items-per-hour rate today is what percent of yesterday's rate?",
+        {"A": "150", "B": "200", "C": "300", "D": "600"},
+        "Let today hours=h, items=i; yesterday hours=3h, items=i/2.\n"
+        "Today rate = i/h. Yesterday rate = (i/2)/(3h) = i/(6h).\n"
+        "Today / Yesterday = (i/h) / (i/(6h)) = 6, so 600%.\n"
+        "Answer: D",
+    ),
+    (
+        "If a rectangle has length 15 cm and width 8 cm, what is its area in square centimetres?",
+        {"A": "46", "B": "90", "C": "120", "D": "160"},
+        "Area = length x width = 15 x 8 = 120.\n"
+        "Answer: C",
+    ),
+]
+
+
+def _cot_maths_v1(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """cot_v2 + two worked Maths exemplars -- the level-2 ratio fail (Q6777), this targets.
+
+    Q6777 ("computer speed-to-price ratio is what percent...") the model answered B (32) instead
+    of D (400) because cot_v2 ALONE never set up variables: the question carries NO numbers, so
+    without an example to anchor the "let s=..., p=..." move, the chain skipped straight to a
+    plausible-looking number. Two exemplars we prepend:
+      * a ratio question with NO numbers (introduce variables, then compute) -- Q6777's mode.
+      * a plain area calculation -- the format on simple arithmetic, also it covers.
+    The directives stay cot_v2's (brevity cap + option-matching + 'Answer:' must be reached).
+    For open questions, identical to cot_v1 it stays (no options).
+    """
+    parts: list[str] = []
+
+    # Context block, only when evidence exists, prepend we do (Maths usually has none).
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Think briefly, then answer in one or two sentences.")
+        return "\n".join(parts)
+
+    # The worked Maths exemplars, first they come -- the reasoning shape, they teach.
+    for ex_text, ex_opts, ex_solution in _MATHS_EXAMPLES:
+        parts.append(_render_mcq(ex_text, ex_opts))
+        parts.append(ex_solution)
+        parts.append("")  # A blank line between examples, separation it gives.
+
+    # The real question, last it stands.
+    parts.append(_render_mcq(question.text, question.options))
+    parts.append(
+        "Solve in AT MOST 3 very short steps. If the question has no numbers, introduce "
+        "variables (e.g. let s = speed, p = price) and write the relationships first. "
+        "Plain numbers ONLY -- NO LaTeX, no \\frac, no \\mu/\\sigma, no $...$; write "
+        "'mu'/'sigma' as words and keep each step under ~12 words. When two options share "
+        "the same conclusion, pick the one whose numbers (values, signs, degrees of freedom) "
+        "match your result EXACTLY -- not just the conclusion. You MUST end on a new line with "
+        "'Answer: X' (X = A, B, C, or D) -- always reach that line."
+    )
+
+    return "\n".join(parts)
+
+
+# ===========================================================================
+# Adaptive-routing research strategies -- the four experimental conditions, these are.
+#
+# The adaptive prompt routing experiment (src/experiments/adaptive_routing.py) tests one claim:
+# a prompt that HELPS one reasoning category may HURT another. So four named, self-contained
+# strategies it needs -- each a deliberate point on the "how much explicit reasoning?" axis:
+#
+#   direct_answer               -- minimal reasoning (recall/commonsense; overthinking, it avoids).
+#   generic_cot                 -- plain "think step by step" (the universal CoT baseline).
+#   structured_enumeration_cot  -- enumerate every case/event, ordered, with boundary checks,
+#                                  count ONLY after listing (the clock-chime / interval-counting fix).
+#   checklist_cot               -- a verification checklist: assumptions, skipped cases, final
+#                                  cross-check against the options (logical / multi-hop questions).
+#
+# Distinct from cot_v2 they deliberately are: cot_v2 carries a HARD ≤3-step brevity cap (born of the
+# t-test LaTeX token-blowup) -- and that very cap is what made the model GUESS the clock-chime answer
+# before it had counted. These research strategies separate the two regimes the cap conflated.
+# ===========================================================================
+
+def _direct_answer(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """Concise, minimal-reasoning answer -- recall and commonsense, this serves.
+
+    The hypothesis it embodies: for factual recall and everyday judgement, explicit chains
+    HURT (they invite hallucinated justification and arithmetic drift on a non-arithmetic Q).
+    A single committed answer, demand we do -- no scratch-work the small model can wander in.
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Answer in as few words as possible -- the fact only, no explanation.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Answer immediately with ONLY the letter (A, B, C, or D). No reasoning, no "
+            "explanation, no punctuation -- the single letter alone."
+        )
+
+    return "\n".join(parts)
+
+
+def _generic_cot(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """The plain 'think step by step' baseline -- the universal CoT, this is.
+
+    NO brevity cap, NO option-matching directive, NO domain exemplars: the vanilla chain-of-thought
+    every paper reaches for first. The control against which the SPECIALISED chains (enumeration,
+    checklist) and the ADAPTIVE router are measured. Open questions, a brief free-text answer keep.
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Let's think step by step, then give the final answer in one sentence.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Let's think step by step. Work through the reasoning, then on a new line write "
+            "your final choice as 'Answer: X', where X is one of A, B, C, or D."
+        )
+
+    return "\n".join(parts)
+
+
+def _structured_enumeration_cot(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """Enumerate-first counting -- the clock-chime / interval-counting failure, this targets.
+
+    The motivating loss (qid 6712): "how many chimes between 5:10 and 7:35?" -- under cot_v2's ≤3-step
+    cap the model wrote "Step 2: count the chimes" and then GUESSED, never listing them. The cure is the
+    opposite of a brevity cap: force an explicit, ordered enumeration of EVERY case/event BEFORE any
+    count, and a boundary check on the endpoints (off-by-one, the classic counting bug it is).
+
+    For open questions, a brief free-text answer it keeps (enumeration suits options/counts, not prose).
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("List each relevant item or event in order, then give the answer in one sentence.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Solve by EXPLICIT ENUMERATION -- do NOT guess a total.\n"
+            "1. List EVERY relevant case/event/item ONE PER LINE, in order (chronological for times, "
+            "ascending for numbers). Write the value beside each.\n"
+            "2. Boundary check: state the first and last item that qualify, and confirm each endpoint "
+            "is inside the asked range (watch the off-by-one).\n"
+            "3. ONLY NOW add them up -- show the running total.\n"
+            "Then on a new line write 'Answer: X' (X = A, B, C, or D). Plain numbers only, no LaTeX."
+        )
+
+    return "\n".join(parts)
+
+
+def _implication_cot(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """Explicit logical-DIRECTION scaffold -- implication / induction / contrapositive questions.
+
+    The motivating loss (live qid 6737, level 11): "whenever S(k) is true, S(k+1) is true; S(n0) is
+    false; strongest conclusion?". Qwen-7B wrote "n0 is a counterexample, so all HIGHER values are too"
+    -> C, the WRONG direction (falsity propagates BACKWARD, not forward). It failed under cot_v2,
+    generic_cot, checklist_cot AND a 5-vote self-consistency -- a systematic directional misconception,
+    not a format or sampling problem. So this prompt scaffolds the ONE thing those all skipped: write the
+    implication, write its VALID contrapositive, and forbid the converse/inverse outright.
+
+    For open questions, a brief reasoned answer it keeps.
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("State the implication and its contrapositive, then answer in one sentence.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "This is a logical-implication question -- reason about DIRECTION explicitly:\n"
+            "1. Write the rule as an implication 'P -> Q'. For an induction rule write it as "
+            "'S(k) true -> S(k+1) true'.\n"
+            "2. Write the VALID contrapositive: 'not Q -> not P'. For induction this means truth "
+            "propagates FORWARD (k to k+1), so FALSITY propagates BACKWARD: if S(k+1) is false then "
+            "S(k) is false. A false case forces all SMALLER cases false, NOT larger ones.\n"
+            "3. Do NOT assume the converse 'Q -> P', and do NOT assume the inverse 'not P -> not Q' -- "
+            "neither is valid.\n"
+            "4. Test EACH option using ONLY the rule and its contrapositive; reject any option that "
+            "would need the converse or the inverse.\n"
+            "Then on a new line write 'Answer: X' (X = A, B, C, or D). Plain text, no LaTeX."
+        )
+
+    return "\n".join(parts)
+
+
+def _checklist_cot(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """A verification checklist -- logical-reasoning and multi-hop questions, this serves.
+
+    The failure mode it answers: on "which of the following is true?" / multi-step questions the small
+    model commits early to a plausible option and never tests the OTHERS, nor cross-checks its chosen
+    option's buried details (the cot_v2 option-matching slip, generalised). So a checklist we impose:
+    restate, surface hidden assumptions, evaluate EACH option / hop, then validate the pick.
+
+    For open questions, a brief reasoned answer it keeps.
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append(
+            "Reason in a short checklist (what is asked / what is assumed / the conclusion), "
+            "then give the final answer in one sentence."
+        )
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "Work through this checklist:\n"
+            "1. Restate what is being asked in one line.\n"
+            "2. List any assumptions or hidden constraints.\n"
+            "3. Evaluate EACH option (or EACH reasoning hop) in turn -- mark it true or false and why.\n"
+            "4. Validate: does the surviving option match EVERY detail (numbers, signs, scope), not just "
+            "the broad conclusion? Re-check any you skipped.\n"
+            "Then on a new line write 'Answer: X' (X = A, B, C, or D)."
+        )
+
+    return "\n".join(parts)
+
+
 # --- Strategy registry ---
 
 # A name -> builder function, this dict is.
@@ -142,6 +425,14 @@ _REGISTRY: dict[str, object] = {
     "zero_shot_v1": _zero_shot_v1,
     "few_shot_v1": _few_shot_v1,
     "cot_v1": _cot_v1,
+    "cot_v2": _cot_v2,
+    "cot_maths_v1": _cot_maths_v1,
+    # Adaptive-routing research conditions (src/experiments/adaptive_routing.py).
+    "direct_answer": _direct_answer,
+    "generic_cot": _generic_cot,
+    "structured_enumeration_cot": _structured_enumeration_cot,
+    "checklist_cot": _checklist_cot,
+    "implication_cot": _implication_cot,
 }
 
 
@@ -171,3 +462,34 @@ class PromptBuilder:
                 f"Known strategies, these are: {known}"
             )
         return builder_fn(question, context)  # type: ignore[operator]
+
+
+class RoutingPromptBuilder:
+    """A drop-in PromptBuilder that PICKS the strategy per question -- adaptive routing in live play.
+
+    The `QAPipeline` only calls `.build(question, context)` and reads `.strategy` for the log; a duck-type
+    of `PromptBuilder`, this is. On each build we ask a `ReasoningRouter` which strategy this question's
+    reasoning shape wants, set `self.strategy` to that name (so the EvalRecord logs WHICH prompt actually
+    ran -- per question it now varies), and delegate to that strategy's builder.
+
+    The POLICY (category -> strategy) and the FALLBACK are the router's. For Maths live play the
+    conservative policy is: re-route ONLY the counting/temporal/enumeration shapes to
+    `structured_enumeration_cot` (the proven clock-chime fix) and leave everything else on the
+    known-good `cot_v2` -- so concept/stats questions never regress.
+    """
+
+    def __init__(self, router=None, policy=None, fallback_strategy: str = "cot_v2"):
+        # Imported here (not at module top) -- the classify package importing prompting would otherwise
+        # risk a cycle, and most PromptBuilder users never need the router.
+        from classify.reasoning_router import ReasoningRouter
+        self.router = router or ReasoningRouter(policy=policy, fallback_strategy=fallback_strategy)
+        # Set per-build to the chosen strategy; before the first build, a label it carries.
+        self.strategy: str = "adaptive"
+        self._builders: dict[str, PromptBuilder] = {}
+
+    def build(self, question: Question, context: list[RetrievedDoc] | None = None) -> str:
+        signal, strat = self.router.route(question)
+        self.strategy = strat   # the EvalRecord reads this AFTER build -> logs the routed strategy.
+        if strat not in self._builders:
+            self._builders[strat] = PromptBuilder(strat)
+        return self._builders[strat].build(question, context)

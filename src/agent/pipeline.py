@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 
+from agent.voting import majority_vote
 from classify.classifier import QuestionClassifier
 from inference.engine import LLMEngine
 from prompting.builder import PromptBuilder
@@ -55,6 +56,14 @@ class QAPipeline:
     Injected dependencies, all of them are -- so swap, mock and benchmark each part, we can.
     """
 
+    # Below this many seconds left, no time for another ~CoT sampling pass there is -- stop, and the
+    # votes we already have, keep them. (cot_v1 a sample ~4s costs; 5s of margin, comfortably safe it is.)
+    _SC_MIN_MARGIN_S: float = 5.0
+
+    # Numbers embedded in an option's text, this extracts -- commas stripped ("15,300" -> 15300).
+    # The calculator-as-verifier (D-017) maps its result to an option through these.
+    _NUM_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+
     def __init__(
         self,
         engine: LLMEngine,
@@ -62,14 +71,37 @@ class QAPipeline:
         classifier: QuestionClassifier | None = None,
         retriever=None,
         tools=None,
+        self_consistency_n: int = 1,
+        self_consistency_temperature: float = 0.7,
         latency_budget_s: float = 30.0,
+        max_new_tokens: int | None = None,
     ):
         self.engine = engine
         self.prompt_builder = prompt_builder
         self.classifier = classifier
         self.retriever = retriever
         self.tools = tools
+        # The generation cap, optional it is. None (default) -> pass NOTHING to engine.generate, so the
+        # engine's own default (256) stands -- EXACT current behaviour for every existing pipeline, no
+        # change at all. Set it (e.g. 512) when a verbose strategy needs room to reach its 'Answer:' line:
+        # at n=1 the 256 default TRUNCATED structured/CoT chains mid-reasoning (the no_answer failure the
+        # offline routing experiment surfaced). With the game's 130s budget, 512 is comfortably affordable.
+        self.max_new_tokens = max_new_tokens
+        # Self-consistency: N>1 -> sample N CoT chains and majority-vote (Phase 5 / the Maths bet).
+        # n=1 (the default) -> a single greedy pass: ZERO behaviour change for every existing pipeline.
+        self.self_consistency_n = max(1, int(self_consistency_n))
+        self.self_consistency_temperature = self_consistency_temperature
         self.latency_budget_s = latency_budget_s
+
+    def _gen(self, prompt: str, **kwargs) -> str:
+        """engine.generate, with `max_new_tokens` injected ONLY when this pipeline set one.
+
+        None -> we pass nothing, so the engine default stands (byte-for-byte the old behaviour). A caller
+        that already passed max_new_tokens explicitly, we never override.
+        """
+        if self.max_new_tokens is not None and "max_new_tokens" not in kwargs:
+            kwargs["max_new_tokens"] = self.max_new_tokens
+        return self.engine.generate(prompt, **kwargs)
 
     def answer(self, question: Question) -> Prediction:
         """One question in, one Prediction out -- the whole system, in a single call this is.
@@ -93,6 +125,10 @@ class QAPipeline:
 
         # Raw generation output -- empty string a safe default is.
         raw: str = ""
+
+        # The parsed answer/confidence -- set by the parse stage (single pass) OR the vote (self-consistency).
+        ans: str = ""
+        conf: float = 0.0
 
         try:
             # --- Stage: classify ---
@@ -122,9 +158,15 @@ class QAPipeline:
                 prompt: str = self.prompt_builder.build(question, docs)
 
             # --- Stage: generate ---
-            # The model, called with engine defaults (Phase 1 -- max_new_tokens/temperature not overridden).
+            # n=1 (default): ONE pass, engine defaults (max_new_tokens/temperature not overridden).
+            # n>1 (self-consistency): N SAMPLED chains, parsed and majority-voted -- for the hard
+            # reasoning of Maths, more robust than one greedy pass it is (the occasional good chain,
+            # the vote surfaces it; the confidence the VOTE SHARE becomes -- a real calibration signal).
             with stopwatch(breakdown, "generate"):
-                raw = self.engine.generate(prompt)
+                if self.self_consistency_n > 1:
+                    ans, conf, raw = self._self_consistency_answer(prompt, question, guard)
+                else:
+                    raw = self._gen(prompt)
 
             # --- Stage: tool ---
             # The calculator loop (D-013): only when tools present AND the classifier says arithmetic
@@ -134,8 +176,12 @@ class QAPipeline:
                 # Skip the tool when retrieval already fired (D-NEWS): the calculator re-answer prompt
                 # carries only the bare MCQ -- NOT the retrieved docs -- so letting it override an
                 # evidence-grounded answer would silently discard the web snippets (the News-clobber bug).
+                # Skip too under self-consistency: the N CoT chains compute their arithmetic INLINE and
+                # vote on it -- the tool's single context-free re-answer would fight the vote (and a wrong
+                # SET-UP the calculator cannot save anyway -- our Maths logs, repeatedly this they showed).
                 if (
-                    self.tools
+                    self.self_consistency_n <= 1
+                    and self.tools
                     and self.classifier
                     and not retrieval_used
                     and self.classifier.needs_calculator(question)
@@ -146,9 +192,10 @@ class QAPipeline:
                         tool_used = used
 
             # --- Stage: parse ---
-            # The chosen letter and confidence, extracted from messy model output they are.
+            # Single-pass mode parses the raw here; self-consistency already voted (ans/conf set above).
             with stopwatch(breakdown, "parse"):
-                ans, conf = QAPipeline.parse_answer(raw, question)
+                if self.self_consistency_n <= 1:
+                    ans, conf = QAPipeline.parse_answer(raw, question)
 
         except Exception as e:
             # A crash, caught here it is -- the live game must never go silent.
@@ -188,40 +235,78 @@ class QAPipeline:
             error=None,
         )
 
+    def _self_consistency_answer(
+        self, prompt: str, question: Question, guard: LatencyGuard
+    ) -> tuple[str, float, str]:
+        """N sampled chains of the SAME prompt -> a majority vote (the self-consistency technique).
+
+        Each sample at `self_consistency_temperature` we draw (so the chains DIVERGE -- a vote of N
+        identical greedy passes, meaningless it would be). Each we parse to a letter; over those
+        letters `majority_vote` decides. Budget-aware: a further sample we skip once under
+        `_SC_MIN_MARGIN_S` the guard falls -- but at LEAST one we always keep (the loop's first pass,
+        the margin check never blocks).
+
+        Returns: (answer, confidence, raw_output) -- the confidence the VOTE SHARE is (winners/total),
+        and the raw the most-confident winning chain's text (a representative the log keeps).
+        """
+        candidates: list[Prediction] = []
+        for _ in range(self.self_consistency_n):
+            # Time for another ~CoT pass, is there? Below the margin -> the votes we have, settle for them.
+            if candidates and guard.remaining() < self._SC_MIN_MARGIN_S:
+                break
+            sample = self._gen(
+                prompt, temperature=self.self_consistency_temperature
+            )
+            a, c = QAPipeline.parse_answer(sample, question)
+            candidates.append(
+                Prediction(qid=question.qid, answer=a, confidence=c, raw_output=sample)
+            )
+        winner = majority_vote(candidates)  # >=1 candidate always -- the empty-list guard never trips.
+        return winner.answer, winner.confidence, winner.raw_output
+
     def _run_calculator_tool(
         self, question: Question, guard: LatencyGuard
     ) -> tuple[str | None, str | None]:
-        """The JSON-tool dispatch (D-013), single-turn: the model a calculator call emits, run it we do,
-        then with the number it re-answers. The course's LangChain JSON pattern, over our LOCAL engine.
+        """The calculator as a VERIFIER (D-017): single-turn, the model an arithmetic call emits, run it
+        we do -- then the number to an OPTION we map, and the chain's answer OVERRIDE we do ONLY on a
+        unique, in-tolerance match.
+
+        Why a match-gate (the run-#8 clobber, thus avoided): re-answering blindly from the result HURT
+        concept/stats Qs (a t-test where the answer is a CONCLUSION using a number, not the number). So:
+        override only when the result IS one of the options (mean=65 == the option "65"); else the cot_v2
+        reasoning we KEEP. Default = keep the chain; override only on confidence (run #10 motivated this).
 
         Returns:
-            (final_raw, "calculator") -- when the model a valid call made AND the re-answer succeeded.
-            (None, None)              -- otherwise, so the plain-generate answer untouched it stays.
+            ("Answer: X" + trace, "calculator") -- a valid call made AND the result UNIQUELY matched option X.
+            (None, None)                        -- otherwise, so the cot_v2 answer untouched it stays.
         Crash-safe entirely: a bad JSON, a forbidden expression, a calc error -- all swallowed, None returned.
         """
         calc = self.tools.get("calculator") if isinstance(self.tools, dict) else None
         if calc is None:
             return None, None
-        # Two more generations the tool costs -- below the wall too close, then skip it we do.
+        # One more generation the tool costs -- below the wall too close, then skip it we do.
         if guard.remaining() < 4.0:
             return None, None
 
         try:
             mcq = _render_mcq_block(question)
 
-            # Turn 1: the tool offer. ONLY-JSON or ONLY-a-letter, the model we ask for.
+            # The tool offer. ONLY-JSON or ONLY-a-letter, the model we ask for. The FULL computation in the
+            # expression we want (every raw number listed) -- the model's own mental arithmetic NOT trusted
+            # it is (run #10: ten scores it summed to 620, not 650). The adding, the tool must do.
             offer = (
                 f"{mcq}\n\n"
                 "A calculator tool you may use for arithmetic. To call it, reply with ONLY this JSON "
                 "and nothing else:\n"
                 '{"name": "calculator", "arguments": {"expression": "<arithmetic expression>"}}\n'
-                "Pure arithmetic the expression must be (digits and + - * / ** % ( ) only).\n"
+                "Pure arithmetic the expression must be (digits and + - * / ** % ( ) only). Put the FULL "
+                "computation in it -- list EVERY original number and let the tool add; pre-compute nothing.\n"
                 "No calculation needed? Then reply with ONLY the letter (A, B, C, or D)."
             )
-            first = self.engine.generate(offer)
+            first = self._gen(offer)
             call = _extract_first_json(first)
             if not call or call.get("name") != "calculator":
-                return None, None  # No tool call -- the plain answer, let it stand.
+                return None, None  # No tool call -- the cot_v2 answer, let it stand.
 
             args = call.get("arguments") or {}
             expr = str(args.get("expression", "")).strip()
@@ -229,17 +314,61 @@ class QAPipeline:
                 return None, None
             result = calc(expr)  # safe-AST calculate(); on anything non-arithmetic, it raises.
 
-            # Turn 2: the result fed back, the final letter we now demand.
-            followup = (
-                f"{mcq}\n\n"
-                f"A calculator computed: {expr} = {result}\n"
-                "Using this result, answer with ONLY the letter (A, B, C, or D)."
-            )
-            final = self.engine.generate(followup)
-            return final, "calculator"
+            # The number -> an OPTION, map it we do. Override ONLY on a unique, in-tolerance match.
+            letter = self._option_for_value(question, result)
+            if letter is None:
+                return None, None  # No single option the result matched -> the cot_v2 reasoning we keep.
+            # "Answer: X" the parser reads at conf 1.0; the trace (no A-D letter in it), for the log we keep.
+            return f"Answer: {letter}\n[calculator: {expr} = {result}]", "calculator"
         except Exception:
-            # Any slip -- the maths path must never crash the turn; the plain answer, fall back to it we do.
+            # Any slip -- the maths path must never crash the turn; the cot_v2 answer, fall back to it we do.
             return None, None
+
+    @staticmethod
+    def _numbers_in(text: str) -> list[float]:
+        """Every number embedded in an option's text -> floats, commas stripped ("15,300" -> 15300.0)."""
+        out: list[float] = []
+        for m in QAPipeline._NUM_RE.findall(text or ""):
+            try:
+                out.append(float(m.replace(",", "")))
+            except ValueError:
+                pass  # A lone "-" or a stray match -- skip it we do.
+        return out
+
+    @staticmethod
+    def _option_for_value(question: Question, value: float) -> str | None:
+        """A computed number -> the option letter it UNIQUELY matches (else None) -- the verifier's gate.
+
+        Override the chain ONLY when exactly ONE option carries a number within ~0.5% of the result AND no
+        OTHER option is within that tolerance. "The answer IS a number" (mean=65 -> option "65") it catches;
+        "a conclusion that merely uses a number" (a t-test "df=17") it rejects (the result equals no option
+        value) -> the cot_v2 answer kept it is. Densely-spaced numeric options (e.g. 6100/6200/6300/6400),
+        the uniqueness check still separates -- the nearest within tol, the rivals outside it.
+        """
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        # Tolerance: 0.5% of the magnitude, but >= 1.0 (so integers like 65 match exactly-ish).
+        tol = max(1.0, 0.005 * abs(v))
+        best_letter: str | None = None
+        best_dist = float("inf")
+        second_dist = float("inf")
+        for letter in sorted(question.options):
+            nums = QAPipeline._numbers_in(question.options[letter])
+            if not nums:
+                continue
+            d = min(abs(v - n) for n in nums)  # this option's NEAREST number to the result.
+            if d < best_dist:
+                second_dist = best_dist
+                best_dist = d
+                best_letter = letter
+            elif d < second_dist:
+                second_dist = d
+        # Within tol AND no rival within tol -> a confident, unique match it is.
+        if best_letter is not None and best_dist <= tol and second_dist > tol:
+            return best_letter
+        return None
 
     @staticmethod
     def parse_answer(raw_output: str, question: Question) -> tuple[str, float]:

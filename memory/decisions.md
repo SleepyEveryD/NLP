@@ -127,6 +127,39 @@ below the 30s wall). `BenchmarkRunner.run(questions)` signature unchanged → no
 Per-question dynamic budget seeding from `game.time_remaining` left as a refinement (answer_fn signature
 would need `time_left`). `meta["mode"]` recorded in every run's `meta.json`.
 
+### [D-016] Self-consistency voting for Maths (comp 3); `majority_vote` is the shared primitive
+**Date:** 2026-05-27 · **Status:** Accepted
+**Context:** Maths is the unmoved leaderboard bottleneck (lb 3 across runs #1–#6). The misses are
+REASONING/set-up errors, NOT arithmetic — our logs show the calculator FIRED on a hard Maths Q (qid 6786
+MVT count) and STILL missed (a wrong set-up no tool saves). Latency is a non-issue (cot ~3.9s; 25s aim).
+**Decision:** Add a general self-consistency capability to `QAPipeline` (`self_consistency_n`,
+`self_consistency_temperature`; **n=1 default = zero behaviour change** for every existing pipeline). When
+n>1: draw N SAMPLED chains of the same prompt, `parse_answer` each, and `majority_vote` over the letters;
+confidence becomes the VOTE SHARE (a real calibration signal). The Phase-5 `majority_vote` stub is now
+IMPLEMENTED in `agent/voting.py` (most-voted wins; ties by mean confidence) and is the SHARED vote
+primitive for BOTH self-consistency (one model, N samples) and the future multi-model ensemble.
+Notebook 03's `pipeline_maths` (comp 3) → `cot_v1` + `self_consistency_n=3` (T=0.7) + `retriever=None`.
+**Under self-consistency the calculator/tool stage is SKIPPED** (the N CoT chains compute inline and vote;
+a context-free re-answer would fight the vote, and budget). `tools=` kept on the object only so n=1
+ablations reuse it. **Consequences:** ~3×4s≈12s/Maths question (≪25s; the loop skips a sample when
+<`_SC_MIN_MARGIN_S`=5s remain, always keeping ≥1). Ticks the rubric's "ensemble reliability /
+self-consistency" + "overconfidence" (vote-share calibration) boxes.
+**VERIFIED run #7 (2026-05-27, branch `mathonly`):** the plumbing WORKS (comp 3 = cot_v1/tool=None/retr=False),
+but it did NOT lift Maths. The raw chain (records.jsonl) shows WHY — and it is NOT a knowledge gap: on the lvl-1
+t-test Q the model's CoT correctly derived df=17 and ±2.110 (= option C's content), then output "Answer: B" — an
+**option-MATCHING slip** (B and C differ only in df 18 vs 17; it grabbed the shared "do not reject" conclusion
+without checking the df). `confidence=1.0` ⇒ all 3 chains made the SAME slip, so SC (kills RANDOM noise) couldn't
+help. So SC is not the Maths fix, but a cot PROMPT tweak ("pick the option whose numbers/df match your reasoning")
+might be. Latency was 20.7s (3 chains, NOT the ~12s estimated). KEEP the capability (cheap, rubric-relevant,
+n=1=no-op). The SC code lives on `mathonly` (7402281) — align onto `4-rag` before the final run.
+**UPDATE run #8 (2026-05-27, the cot_v2 fix):** cot_v2 fixed the option-matching slip AND solved the Maths Q
+(qid 6908, abelian-group, picked D = correct), but cot_v2 + SC (n=3) timed out at **41s** (~20s/chain × 2) →
+the correct answer was judged a LOSS. So **SC is DROPPED from the live Maths pipeline** — `pipeline_maths` is now
+**n=1 cot_v2 + retriever=None + tools=None** (single ~20s pass; tools off so the n=1 calculator can't clobber
+cot_v2 on a stats Q's "5%"). The SC capability stays in the codebase for offline use, but is NOT used live.
+The defensive SC budget-guard fix (reserve longest-chain time, not flat 5s) is deferred (SC unused live → moot).
+Net: Maths is now LATENCY-bound, not reasoning-bound — a single in-time cot_v2 answer should move it past lb 3.
+
 ### [D-011] Repo docs/comments in English; user-facing chat in Chinese
 **Date:** 2026-05-25 · **Status:** Accepted
 **Context:** Course/assignment language is English; Yoda style is inherently English. User asked for Chinese replies.
