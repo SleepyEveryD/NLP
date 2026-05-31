@@ -109,6 +109,19 @@ LOGIC_FOCUS_CONDITIONS: list[Condition] = [
 ]
 
 
+# STEP-1 PROBE for the implication/induction-direction hypothesis. checklist (LOGIC_FOCUS) was REFUTED
+# and 6737 stayed wrong under every prompt incl. SC -- a systematic directional misconception. This pits
+# the current fallback and the two general chains against `implication_cot`, the ONLY prompt that
+# scaffolds the contrapositive and forbids the converse/inverse. The cheap go/no-go: does the explicit
+# direction prompt flip 6737 (log-ind-001) / lr-001 / log-ind-003? If not -> capability ceiling, stop.
+IMPLICATION_PROBE_CONDITIONS: list[Condition] = [
+    Condition("cot_v2", "Current Maths fallback (brevity-capped)", "cot_v2"),
+    Condition("generic_cot", "Step-by-step, no cap", "generic_cot"),
+    Condition("checklist_cot", "Per-option verification checklist", "checklist_cot"),
+    Condition("implication_cot", "Explicit logical-direction scaffold (P->Q, contrapositive)", "implication_cot"),
+]
+
+
 # --------------------------------------------------------------------------- #
 # The record -- everything the rubric asks us to save, one row holds.
 # --------------------------------------------------------------------------- #

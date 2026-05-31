@@ -342,6 +342,45 @@ def _structured_enumeration_cot(question: Question, context: list[RetrievedDoc] 
     return "\n".join(parts)
 
 
+def _implication_cot(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """Explicit logical-DIRECTION scaffold -- implication / induction / contrapositive questions.
+
+    The motivating loss (live qid 6737, level 11): "whenever S(k) is true, S(k+1) is true; S(n0) is
+    false; strongest conclusion?". Qwen-7B wrote "n0 is a counterexample, so all HIGHER values are too"
+    -> C, the WRONG direction (falsity propagates BACKWARD, not forward). It failed under cot_v2,
+    generic_cot, checklist_cot AND a 5-vote self-consistency -- a systematic directional misconception,
+    not a format or sampling problem. So this prompt scaffolds the ONE thing those all skipped: write the
+    implication, write its VALID contrapositive, and forbid the converse/inverse outright.
+
+    For open questions, a brief reasoned answer it keeps.
+    """
+    parts: list[str] = []
+
+    if context:
+        parts.append(_build_context_block(context))
+
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("State the implication and its contrapositive, then answer in one sentence.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "This is a logical-implication question -- reason about DIRECTION explicitly:\n"
+            "1. Write the rule as an implication 'P -> Q'. For an induction rule write it as "
+            "'S(k) true -> S(k+1) true'.\n"
+            "2. Write the VALID contrapositive: 'not Q -> not P'. For induction this means truth "
+            "propagates FORWARD (k to k+1), so FALSITY propagates BACKWARD: if S(k+1) is false then "
+            "S(k) is false. A false case forces all SMALLER cases false, NOT larger ones.\n"
+            "3. Do NOT assume the converse 'Q -> P', and do NOT assume the inverse 'not P -> not Q' -- "
+            "neither is valid.\n"
+            "4. Test EACH option using ONLY the rule and its contrapositive; reject any option that "
+            "would need the converse or the inverse.\n"
+            "Then on a new line write 'Answer: X' (X = A, B, C, or D). Plain text, no LaTeX."
+        )
+
+    return "\n".join(parts)
+
+
 def _checklist_cot(question: Question, context: list[RetrievedDoc] | None) -> str:
     """A verification checklist -- logical-reasoning and multi-hop questions, this serves.
 
@@ -393,6 +432,7 @@ _REGISTRY: dict[str, object] = {
     "generic_cot": _generic_cot,
     "structured_enumeration_cot": _structured_enumeration_cot,
     "checklist_cot": _checklist_cot,
+    "implication_cot": _implication_cot,
 }
 
 
