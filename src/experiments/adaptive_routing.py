@@ -73,10 +73,18 @@ def load_reasoning_eval(
 
 @dataclass
 class Condition:
-    """One arm of the ablation. `strategy=None` means ADAPTIVE (the router picks)."""
+    """One arm of the ablation. `strategy=None` means ADAPTIVE (the router picks).
+
+    `self_consistency_n > 1` turns this arm into a SELF-CONSISTENCY vote: sample N chains at
+    `temperature` and majority-vote the letter (the confidence becomes the vote share). At n=1 (the
+    default) it is a single greedy pass -- ZERO behaviour change. The 130s/question game budget makes
+    N=3..5 comfortably affordable (a structured chain ~13s).
+    """
     name: str
     description: str
     strategy: Optional[str]   # a fixed strategy name, or None for adaptive routing.
+    self_consistency_n: int = 1
+    temperature: float = 0.7
 
 
 DEFAULT_CONDITIONS: list[Condition] = [
@@ -84,6 +92,20 @@ DEFAULT_CONDITIONS: list[Condition] = [
     Condition("B_generic_cot", "Always generic chain-of-thought", "generic_cot"),
     Condition("C_structured", "Always structured enumeration", "structured_enumeration_cot"),
     Condition("D_adaptive", "Adaptive prompt routing (ReasoningRouter)", None),
+]
+
+
+# A FOCUSED ablation for the level-11 induction/contrapositive death (live qid 6737). It pits the
+# brevity-capped cot_v2 (which gagged the reasoning -- 24 tokens, a wrong one-line heuristic) against
+# the uncapped chains and a self-consistency vote, over the contested logic + look-alike-stats questions.
+# The question it answers: does moving Maths logic OFF cot_v2 fix induction WITHOUT regressing the
+# "which-of-the-following-is-true" stats questions that route to the same bucket?
+LOGIC_FOCUS_CONDITIONS: list[Condition] = [
+    Condition("cot_v2", "The current Maths fallback (=3-step brevity cap)", "cot_v2"),
+    Condition("generic_cot", "Step-by-step, NO brevity cap", "generic_cot"),
+    Condition("checklist_cot", "Per-option verification checklist", "checklist_cot"),
+    Condition("checklist_sc5", "Checklist + self-consistency vote (n=5)", "checklist_cot",
+              self_consistency_n=5, temperature=0.7),
 ]
 
 
@@ -160,22 +182,48 @@ class AdaptiveRoutingExperiment:
 
         prompt = self._builder(strategy).build(question, None)
 
+        n = max(1, int(getattr(condition, "self_consistency_n", 1)))
         raw = ""
         error: Optional[str] = None
-        start = time.perf_counter()
+        latency = 0.0
+        tokens_out = 0
+        ans, conf = "", 0.0
+        gold = question.gold
+
         try:
-            raw = self.engine.generate(prompt, max_new_tokens=self.max_new_tokens)
+            if n > 1:
+                # Self-consistency: N sampled chains, then a majority vote on the parsed letter.
+                # Confidence becomes the vote share; the raw keeps every chain (separated) for the log;
+                # latency/tokens SUM across the N calls (the true cost of the vote).
+                from collections import Counter
+                letters: list[str] = []
+                raws: list[str] = []
+                for _ in range(n):
+                    start = time.perf_counter()
+                    r = self.engine.generate(
+                        prompt, max_new_tokens=self.max_new_tokens, temperature=condition.temperature
+                    )
+                    elapsed = time.perf_counter() - start
+                    raws.append(r)
+                    a, _c = QAPipeline.parse_answer(r, question)
+                    letters.append(a)
+                    latency += float(getattr(self.engine, "last_latency_s", None) or elapsed)
+                    tokens_out += int(getattr(self.engine, "last_tokens_out", 0))
+                raw = "\n--- chain ---\n".join(raws)
+                tally = Counter(letters)
+                ans = tally.most_common(1)[0][0]
+                conf = tally[ans] / len(letters)   # the vote share, a real calibration signal it is.
+            else:
+                start = time.perf_counter()
+                raw = self.engine.generate(prompt, max_new_tokens=self.max_new_tokens)
+                elapsed = time.perf_counter() - start
+                latency = float(getattr(self.engine, "last_latency_s", None) or elapsed)
+                tokens_out = int(getattr(self.engine, "last_tokens_out", 0))
+                ans, conf = QAPipeline.parse_answer(raw, question)
         except Exception as e:   # A generation crash -- the row we still write, the error noted.
             error = f"{type(e).__name__}: {e}"
-        elapsed = time.perf_counter() - start
 
-        # The simulated engine reports its OWN (deterministic) latency; the real engine does not, so
-        # for it we fall back to the measured wall-clock.
-        latency = float(getattr(self.engine, "last_latency_s", None) or elapsed)
-
-        ans, conf = QAPipeline.parse_answer(raw, question)
-        gold = question.gold
-        correct = (ans.strip().upper() == gold.strip().upper()) if gold else None
+        correct = (ans.strip().upper() == gold.strip().upper()) if (gold and ans) else None
 
         nonblank_lines = [ln for ln in raw.splitlines() if ln.strip()]
         return ExperimentRecord(
@@ -193,7 +241,7 @@ class AdaptiveRoutingExperiment:
             confidence=conf,
             latency_s=latency,
             tokens_in=int(getattr(self.engine, "last_tokens_in", 0)),
-            tokens_out=int(getattr(self.engine, "last_tokens_out", 0)),
+            tokens_out=tokens_out,   # summed across chains for a self-consistency arm.
             reasoning_chars=len(raw),
             reasoning_lines=len(nonblank_lines),
             raw_output=raw,

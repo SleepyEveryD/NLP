@@ -111,6 +111,11 @@ _DIGIT_RE = re.compile(r"\d")
 _LOGIC_RE = re.compile(
     r"\bwhich\s+of\s+the\s+following\s+(?:is|must)\b"  # "...is true" / "...must (also) be true".
     r"|\bif\b[\s\S]*?\bthen\b"
+    r"|\bwhenever\b"                                   # "whenever S(k) is true ..." -- the induction tell.
+    r"|\bstrongest\s+conclusion\b"
+    r"|\bcan\s+be\s+(?:concluded|drawn)\b"             # "...which can be drawn", "what can be concluded".
+    r"|\bwhat\s+can\s+(?:we|you|be)\s+conclude"
+    r"|\bwhich\s+must\s+(?:be|also)\b|\bwhich\s+must\s+be\s+true\b"
     r"|\bmust\s+(?:also\s+)?be\s+(?:true|false)\b"
     r"|\bcannot\s+be\s+(?:true|false)\b"
     r"|\bmust\s+(?:also\s+)?(?:be\s+true|follow|hold)\b"
@@ -118,7 +123,7 @@ _LOGIC_RE = re.compile(
     r"|\bvalid\s+argument\b|\bvalid\s+conclusion\b"
     r"|\bcontradict|\bsyllogism\b"
     r"|\bit\s+follows\s+that\b"
-    r"|\b(?:all|some|no|none)\s+\w+\s+(?:are|can|cannot)\b"
+    r"|\b(?:all|some|no|none|every|each)\s+\w+\s+(?:is|are|can|cannot)\b"
     r"|\bnecessar(?:y|ily)\b",
     re.IGNORECASE,
 )
@@ -236,7 +241,19 @@ class ReasoningClassifier:
                 "time/clock/duration reasoning (ordering or elapsed time)",
             )
 
-        # 4. ARITHMETIC -- an operator/computation word WITH a digit present.
+        # 4. LOGICAL_REASONING -- validity / implication / "which is true" / induction.
+        #    BEFORE arithmetic on purpose: an induction question ("whenever S(k) true, S(k+1) must be
+        #    true ... strongest conclusion?") carries an incidental '+1' and digits, and a stats MCQ
+        #    ("two-sample t-test, p = 0.03 ... which is true?") carries hyphens that look like the minus
+        #    operator -- so the arithmetic rule would HIJACK both. The reasoning here is logical, not
+        #    computational, so the logic cue wins first. (live qid 6737 was the motivating misroute.)
+        if _LOGIC_RE.search(text):
+            return ReasoningSignal(
+                ReasoningCategory.LOGICAL_REASONING,
+                "logic cue (if-then / which-is-true / whenever / strongest-conclusion / validity)",
+            )
+
+        # 5. ARITHMETIC -- an operator/computation word WITH a digit present.
         if _ARITH_OP_RE.search(text) and _DIGIT_RE.search(text):
             return ReasoningSignal(
                 ReasoningCategory.ARITHMETIC,
@@ -247,13 +264,6 @@ class ReasoningClassifier:
             return ReasoningSignal(
                 ReasoningCategory.ARITHMETIC,
                 "numeric word-problem (count + >=2 numbers + total/left cue)",
-            )
-
-        # 5. LOGICAL_REASONING -- validity / implication / "which is true".
-        if _LOGIC_RE.search(text):
-            return ReasoningSignal(
-                ReasoningCategory.LOGICAL_REASONING,
-                "logic cue (if-then / which-is-true / implies / validity)",
             )
 
         # 6. MULTI_HOP -- a nested relative clause or explicit chaining of steps.
