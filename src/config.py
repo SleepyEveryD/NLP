@@ -27,6 +27,12 @@ class RetrievalConfig:
     top_k: int = 3
     embedder: str = "intfloat/multilingual-e5-small"
     index_path: Optional[str] = None
+    # Minimum FAISS cosine similarity to KEEP a corpus doc. 0.0 = off (every top_k doc passes, the
+    # old behaviour). A floor (~0.72 for e5-small) drops off-topic matches -- the second line of
+    # defence after the needs_retrieval gate, for when retrieval fires but the corpus has no real hit
+    # (e.g. a name-collision pulling celebrity pages). Below the floor everything? -> [] and the
+    # routed retriever falls back to live Wikipedia. Web/Wikipedia docs (no real score) are unaffected.
+    min_score: float = 0.0
 
 
 @dataclass

@@ -182,11 +182,13 @@ class FaissRetriever:
         embedder: str = "intfloat/multilingual-e5-small",
         top_k: int = 3,
         char_limit: int = 600,
+        min_score: float = 0.0,
     ):
         self.index_path = Path(index_path)
         self.embedder_name = embedder
         self.top_k = top_k
         self.char_limit = char_limit
+        self.min_score = min_score   # Cosine floor: docs below it, drop we do (0.0 -> keep all).
         self._model = None     # Lazily loaded, the SentenceTransformer is.
         self._index = None     # Lazily loaded, the FAISS index is.
         self._docs: list[dict] = []
@@ -224,6 +226,8 @@ class FaissRetriever:
             docs: list[RetrievedDoc] = []
             for score, i in zip(scores[0], idxs[0]):
                 if i < 0 or i >= len(self._docs):
+                    continue
+                if float(score) < self.min_score:   # Off-topic match -- below the cosine floor, skip it.
                     continue
                 d = self._docs[i]
                 docs.append(RetrievedDoc(
@@ -266,6 +270,7 @@ class Retriever:
         embedder: str = "intfloat/multilingual-e5-small",
         char_limit: int = 600,
         timeout_s: float = 6.0,
+        min_score: float = 0.0,
     ):
         self.top_k = top_k
         self.source = (source or "routed").lower()
@@ -273,6 +278,7 @@ class Retriever:
         self.embedder = embedder
         self.char_limit = char_limit
         self.timeout_s = timeout_s
+        self.min_score = min_score   # The FAISS cosine floor, to the corpus backend passed it is.
         # The backends, on first use built they are -- a dict of name -> instance, cached here.
         self._cache: dict[str, object] = {}
 
@@ -299,7 +305,7 @@ class Retriever:
         if "faiss" not in self._cache:
             self._cache["faiss"] = FaissRetriever(
                 index_path=self.index_path, embedder=self.embedder,
-                top_k=self.top_k, char_limit=self.char_limit,
+                top_k=self.top_k, char_limit=self.char_limit, min_score=self.min_score,
             )
         return self._cache["faiss"]  # type: ignore[return-value]
 
@@ -346,4 +352,5 @@ def build_retriever(retrieval_cfg, **overrides) -> Optional[Retriever]:
         source=overrides.get("source", getattr(retrieval_cfg, "source", "routed")),
         index_path=overrides.get("index_path", getattr(retrieval_cfg, "index_path", None)),
         embedder=overrides.get("embedder", getattr(retrieval_cfg, "embedder", "intfloat/multilingual-e5-small")),
+        min_score=overrides.get("min_score", getattr(retrieval_cfg, "min_score", 0.0)),
     )

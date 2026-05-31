@@ -29,3 +29,7 @@ retrieval:
   top_k: 3
   embedder: "intfloat/multilingual-e5-small"  # the FAISS path's encoder (e5; query/passage prefixes baked in).
   index_path: "data/corpus/simplewiki"        # build it: python -m retrieval.build_index (null -> Wikipedia fallback).
+  min_score: 0.70               # FAISS cosine FLOOR: drop corpus docs below it (off-topic name-collisions, etc.).
+                                # CONSERVATIVE -- e5-small scores relevant passages ~0.80-0.88, clear noise <0.75,
+                                # so 0.70 trims only obvious garbage. Raise toward 0.78 if noise still lands; set
+                                # 0.0 to disable. Below the floor everything -> [] and routed falls back to Wikipedia.

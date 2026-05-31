@@ -68,10 +68,13 @@ def strip_embedded_options(text: str, option_texts: list[str]) -> str:
     return cleaned or text  # All text was the block? Then keep the original, defensive we stay.
 
 
-def adapt_question(api_q) -> Question:
+def adapt_question(api_q, topic: str | None = None) -> Question:
     """Their Question (options carry integer ids) -> our schemas.Question (with a letter->id map).
 
     The letter->id map, keep it we must -- by integer id the server wants the answer, not by letter.
+    `topic`: the competition's name, the live loop passes it -- the RELIABLE topic signal (the per-turn
+    `level` aside, the server tells us nothing per question). Else None it stays, and the classifier the
+    topic must GUESS from text (`_infer_topic`) -- which under-fired retrieval on clear history questions.
     """
     options: dict[str, str] = {}
     option_ids: dict[str, int] = {}
@@ -88,6 +91,7 @@ def adapt_question(api_q) -> Question:
         option_ids=option_ids,
         qtype=QuestionType.MCQ,
         level=getattr(api_q, "level", None),
+        topic=topic,
     )
 
 
@@ -204,11 +208,15 @@ class GameClient:
         `game.time_remaining` minus a network margin, ideally you should.
         """
         game = self._client.game.start(competition_id, mode=mode)
+        # The competition name -- the RELIABLE topic, every question of THIS game shares it (D-014).
+        # On it the classifier gates retrieval (News / Ancient History -> always retrieve) and the
+        # retriever routes (News -> live web). The server sets no per-question topic, so here we inject it.
+        comp_topic = getattr(getattr(game.state, "competition", None), "name", None)
         while game.in_progress:
             api_q = game.current_question
             if not api_q:  # No question left -- ended the game has.
                 break
-            q = adapt_question(api_q)
+            q = adapt_question(api_q, topic=comp_topic)
             time_left = game.time_remaining  # The server's truth on remaining seconds, this is.
 
             letter = answer_fn(q)  # Here, our pipeline decides.
