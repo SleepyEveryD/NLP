@@ -146,6 +146,12 @@ def _option_patterns(question: Question) -> list[str]:
         for w in re.findall(r"[A-Za-z]+", v):                      # content-word stems (prefix match).
             if len(w) >= 4 and w.lower() not in _OPT_STOPWORDS:
                 pats.append(r"\b" + re.escape(_stem(w)) + r"\w*")
+        for num in re.findall(r"\d[\d,]*(?:\.\d+)?", v):           # NUMBERS ("70%", "1.4m") -- so a
+            # percentage/quantity question windows on the article's STATISTIC sentence, not on a stray
+            # word. Commas dropped so "15,300" also finds a "15300" in the text (qid 11782: the % miss).
+            pats.append(re.escape(num))
+            if "," in num:
+                pats.append(re.escape(num.replace(",", "")))
     seen, out = set(), []
     for p in pats:
         if p not in seen:
