@@ -110,6 +110,48 @@ def _gnews_date_window(question: Question) -> str:
     return f" after:{lo} before:{hi}" if lo else ""
 
 
+def _question_date(question: Question):
+    """The question's ISO date as a `datetime.date` (else None) -- the anchor for recency re-ranking."""
+    m = _ISO_DATE.search(question.text or "")
+    if not m:
+        return None
+    try:
+        from datetime import date
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except Exception:
+        return None
+
+
+# A gnews hit this many days from the question's date we treat as STALE -- a 2019 article for a 2026
+# question is the answer to a different event. Soft, not hard: dropped only when fresher hits remain.
+_STALE_DAYS = 365
+
+
+def _rerank_by_recency(items: list, question: Question) -> list:
+    """Re-order gnews items so the ones published NEAR the question's date come first -- the precision
+    fix for "the article is retrievable but a STALE one out-ranks it" (qid 12133: a 2019 Rosalía piece
+    out-ranked the 2026-05-06 article). Items are `(text, link, pub_date)`.
+
+    - DROP clearly-stale items (>_STALE_DAYS from the question date) -- but only if fresher ones remain,
+      so we never empty the list chasing recency.
+    - Then STABLE-sort by month-proximity, preserving the original (relevance) order within a month --
+      so recency refines the ranking without discarding gnews's relevance signal.
+    No question date (or no dated items) -> unchanged (we don't invent an order)."""
+    qd = _question_date(question)
+    if qd is None or not items:
+        return items
+    def days(it):
+        d = it[2] if len(it) > 2 else None
+        return abs((d - qd).days) if d is not None else None
+    fresh = [it for it in items if (days(it) is not None and days(it) <= _STALE_DAYS)]
+    if not fresh:
+        return items   # nothing dated-and-fresh -> don't second-guess (keep recall, e.g. a Jan event a May report cites).
+    undated = [it for it in items if days(it) is None]
+    # month-bucket so same-month hits keep their relevance order; closer months first; undated kept last-but-present.
+    ranked = sorted(fresh, key=lambda it: days(it) // 30)
+    return ranked + undated
+
+
 # --------------------------------------------------------------------------- #
 # Option-aware body focusing -- the attribution/detail fix.
 # --------------------------------------------------------------------------- #
@@ -296,26 +338,30 @@ _SCAFFOLD = frozenset((
 ).split())
 
 
-def _keyword_query(question: Question, max_terms: int = 6) -> str:
-    """A SHORT entity/noun query for gnews -- the proper names + topical content words, with the question
-    scaffolding (verbs, "event/report/reason/..") stripped. Because gnews is AND-like, a full-sentence
-    query often returns 0 (qids 11917/11910: the answer article exists but the sentence phrasing misses
-    it), while these 4-5 clean terms find it. Used as a RETRY when the full-sentence query comes up short."""
+def _keyword_query(question: Question, max_proper: int = 2, max_or: int = 6) -> str:
+    """A gnews query of the form  "<entity>" "<entity>" (word OR word OR ..)  -- the proper-name entities
+    REQUIRED (quoted), the descriptive content words OR'd. Two failure modes of a plain query this fixes:
+      * a full SENTENCE is AND-matched by gnews -> a noise word ("influenced", "transition") zeroes the
+        result set even though the article is indexed (qids 11917/11910); OR'ing the content words means
+        the headline need only carry SOME of them, so the article surfaces;
+      * ANDing every term over-constrains, but ORing EVERYTHING is too loose -> requiring the proper-name
+        entities keeps it on-topic (qid 12133: require "Rosalia", OR the rest -> her articles, not generic
+        "Latin America" finance pieces).
+    Scaffolding ("event/report/reason/..") and witness clauses are stripped first. Used as a RETRY."""
     text = _strip_body_details(_query_from_question(question))
-    proper = [m for m in _PROPER_SPAN.findall(text) if len(m) >= 3]
+    proper = sorted({m for m in _PROPER_SPAN.findall(text) if len(m) >= 3}, key=len, reverse=True)[:max_proper]
     proper_words = {w.lower() for m in proper for w in m.split()}
-    content = [
-        w for w in re.findall(r"[A-Za-z]+", text)
-        if len(w) >= 4 and w.lower() not in _Q_STOPWORDS and w.lower() not in _OPT_STOPWORDS
-        and w.lower() not in _SCAFFOLD and w.lower() not in proper_words
-    ]
-    out, seen = [], set()
-    for t in proper + content:                 # proper names first (most distinctive), then content nouns.
-        tl = t.lower()
-        if tl not in seen:
-            seen.add(tl)
-            out.append(t)
-    return " ".join(out[:max_terms])
+    content, seen = [], set()
+    for w in re.findall(r"[A-Za-z]+", text):
+        wl = w.lower()
+        if (len(wl) >= 4 and wl not in _Q_STOPWORDS and wl not in _OPT_STOPWORDS
+                and wl not in _SCAFFOLD and wl not in proper_words and wl not in seen):
+            seen.add(wl)
+            content.append(w)
+    content = content[:max_or]
+    required = " ".join(f'"{p}"' for p in proper)
+    or_group = "(" + " OR ".join(content) + ")" if content else ""
+    return (required + " " + or_group).strip()
 
 
 def _option_query_terms(question: Question, max_terms: int = 6) -> str:
@@ -350,7 +396,7 @@ def _headlines_on_topic(items: list, question: Question) -> bool:
     keywords = _question_keywords(question)
     if not keywords:
         return True   # nothing distinctive to test -> don't second-guess the search.
-    return any(_relevance(t, keywords) > 0 for t, _link in items)
+    return any(_relevance(t, keywords) > 0 for t, *_rest in items)
 
 
 def _relevance(text: str, keywords: list[str]) -> float:
@@ -503,11 +549,14 @@ class WebSearchRetriever:
                 except Exception:
                     aug_items = []
                 if aug_items:
-                    seen = {t for t, _l in aug_items}
+                    seen = {t for t, _l, _d in aug_items}
                     items = aug_items + [it for it in items if it[0] not in seen]
+        # PRECISION: re-rank by proximity to the question's date -- a stale hit never out-ranks the dated
+        # article (qid 12133: a 2019 Rosalía piece). Drops clearly-stale items when fresher ones remain.
+        items = _rerank_by_recency(items, question)
         headlines = [
             RetrievedDoc(doc_id=f"gnews:{i}", text=t[: self.char_limit], source="google_news_rss", score=0.0)
-            for i, (t, _link) in enumerate(items[: self.top_k])
+            for i, (t, _link, _d) in enumerate(items[: self.top_k])
         ]
         # BODIES (best-effort): "who was quoted.." / exact numbers live in the article TEXT, not the headline.
         #   1) Guardian API FIRST -- raw `bodyText` in ONE ~0.2s call (no browser, no consent wall). Many of
@@ -536,7 +585,7 @@ class WebSearchRetriever:
                 try:
                     if self.body_mode == "browser":
                         fetched = self._fetch_bodies_via_browser(
-                            [lnk for _t, lnk in items], self.fetch_bodies, question)
+                            [lnk for _t, lnk, _d in items], self.fetch_bodies, question)
                     else:
                         fetched = self._fetch_bodies_via_ddg(query, self.fetch_bodies, question)
                 except Exception:
@@ -557,14 +606,17 @@ class WebSearchRetriever:
     # -- internals --
 
     def _gnews_items(self, query: str) -> list[tuple]:
-        """Google News RSS -> [(headline_text, article_link)]. Keyless, raw RSS, rule-compliant it is.
+        """Google News RSS -> [(headline_text, article_link, pub_date)]. Keyless raw RSS, rule-compliant.
 
         The `item/title` a clean "Headline - Publisher" string is -- the recent fact, often IN it. The
-        `item/link` the (consent-walled) article URL is -- only the BROWSER body path can open it.
+        `item/link` the (consent-walled) article URL is -- only the BROWSER body path can open it. The
+        `item/pubDate` we now also lift -> a `datetime.date` (or None): the PRECISION signal that lets us
+        rank by proximity to the question's date, so a stale 2019 hit never out-ranks the dated article.
         NAME this in the video ("Google News RSS").
         """
         import urllib.parse
         import xml.etree.ElementTree as ET
+        from email.utils import parsedate_to_datetime
 
         url = (
             "https://news.google.com/rss/search?q="
@@ -583,7 +635,11 @@ class WebSearchRetriever:
             text = re.sub(r"\s+", " ", text).strip()
             if not text:
                 continue
-            items.append((text, (item.findtext("link") or "").strip()))
+            try:
+                pub = parsedate_to_datetime(item.findtext("pubDate") or "").date()
+            except Exception:
+                pub = None
+            items.append((text, (item.findtext("link") or "").strip(), pub))
         return items
 
     def _guardian_bodies(self, query: str, question: Question, n: int) -> list[RetrievedDoc]:
