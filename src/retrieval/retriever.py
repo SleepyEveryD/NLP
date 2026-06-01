@@ -60,14 +60,25 @@ def _query_from_question(question: Question, max_chars: int = 300) -> str:
     search engine it is, the real entities it buries. Whitespace collapsed, length capped, the rest is.
     """
     text = (question.text or "").strip()
-    # The dated lead-in clause, drop it we do -- "According to .., " up to the first comma, gone it is.
+    # The dated attribution LEAD-IN clause (up to the first comma), drop it we do -- pure search noise it
+    # is. MANY shapes this game uses, and only "according to.." we caught before -- "In the report from
+    # 2026-05-17, .." slipped through and the date killed the search (qid 11503 -> 0 hits). So broadened:
     text = re.sub(
-        r"^\s*(?:on\s+)?(?:according\s+to\b[^,]*,\s*)",
+        r"^\s*(?:"
+        r"according\s+to\b[^,]*,"                  # According to the 2026-.. report, ..
+        r"|in\s+the\b[^,]*\b(?:report|article)\b[^,]*,"   # In the (news) report from/published .., ..
+        r"|as\s+reported\b[^,]*,"                  # As reported on 2026-.., ..
+        r"|on\s+20\d{2}-\d{2}-\d{2}\b[^,]*,"       # On 2026-05-06, ..
+        r")\s*",
         "",
         text,
         flags=re.IGNORECASE,
     )
-    text = re.sub(r"^\s*on\s+20\d{2}-\d{2}-\d{2}\s*,\s*", "", text, flags=re.IGNORECASE)
+    # EMBEDDED attribution + bare dates anywhere, strip too -- "..on 2026-05-16 according to the article,.."
+    # (qid 11725) the date mid-sentence pins nothing useful; the date WINDOW handles temporality separately.
+    text = re.sub(r",?\s*according\s+to\s+the\s+(?:news\s+)?(?:article|report)\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(?:on|from|published\s+on|dated)\s+20\d{2}-\d{2}-\d{2}\b", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b20\d{2}-\d{2}-\d{2}\b", "", text, flags=re.IGNORECASE)
     # Whitespace, collapse it we do; the length, cap it we must (a search box, finite it is).
     text = re.sub(r"\s+", " ", text).strip()
     return text[:max_chars]
@@ -251,6 +262,97 @@ def _question_keywords(question: Question) -> list[str]:
     return out
 
 
+# Witness/attribution verbs -- a question's "..that <person> EXPERIENCED" clause pins a body WITNESS, not
+# the searchable event. Live evidence: "..explosion that Ángel Linares and his neighbors experienced" -> 0
+# gnews hits, but the bare event "initial explosion" (+ option terms) found the Caracas-strike article.
+_WITNESS_VERB = (
+    r"(?:experienced|witnessed|described|mentioned|mention|saw|heard|felt|reported|recalled|observed"
+    r"|noticed|encountered|said|noted|claimed|stated|revealed|faced)"
+)
+
+
+def _strip_body_details(text: str) -> str:
+    """Drop the body-WITNESS noise from a question so the EVENT is what we search for. Two shapes:
+      * a relative clause  "<event> that <person ...> experienced"  -> keep "<event>", drop the clause;
+      * an attribution     "what X did <person ...> mention"        -> drop the "did <person> mention" span.
+    The witness name is article-body detail that drags a news search off-topic; the event is what's
+    indexed. Used ONLY for the option-augmented FALLBACK re-search (never the primary query)."""
+    text = re.sub(rf"\bthat\s+[^?.,]{{1,55}}?\s+{_WITNESS_VERB}\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(rf"\bdid\s+[^?.,]{{1,45}}?\s+{_WITNESS_VERB}\b", " ", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip(" ?,.")
+
+
+# Question-MECHANICS words -- scaffolding that names HOW the question is asked, not WHAT it's about.
+# Google News RSS is AND-like: ANY term not in the article title/desc zeroes the result set (verified --
+# "Mike Smith fighter pilot climate activist" = 1 hit, but "+influenced +transition" = 0). So for the
+# keyword query these MUST go, leaving only the topical entities/nouns the indexed headline will carry.
+_SCAFFOLD = frozenset((
+    "event influenced transition reveals reveal revealed example action significant regarding outcome "
+    "expected strategy reason benefit primary context mentioned mention described describe describes "
+    "according report article published take took used using called caused occurred involving experienced "
+    "identified focused response decision considered following participation discrepancies discrepancy "
+    "initial main major specific aspect type kind number amount percentage country town highlighted "
+    "noted point contention issue measure"
+).split())
+
+
+def _keyword_query(question: Question, max_terms: int = 6) -> str:
+    """A SHORT entity/noun query for gnews -- the proper names + topical content words, with the question
+    scaffolding (verbs, "event/report/reason/..") stripped. Because gnews is AND-like, a full-sentence
+    query often returns 0 (qids 11917/11910: the answer article exists but the sentence phrasing misses
+    it), while these 4-5 clean terms find it. Used as a RETRY when the full-sentence query comes up short."""
+    text = _strip_body_details(_query_from_question(question))
+    proper = [m for m in _PROPER_SPAN.findall(text) if len(m) >= 3]
+    proper_words = {w.lower() for m in proper for w in m.split()}
+    content = [
+        w for w in re.findall(r"[A-Za-z]+", text)
+        if len(w) >= 4 and w.lower() not in _Q_STOPWORDS and w.lower() not in _OPT_STOPWORDS
+        and w.lower() not in _SCAFFOLD and w.lower() not in proper_words
+    ]
+    out, seen = [], set()
+    for t in proper + content:                 # proper names first (most distinctive), then content nouns.
+        tl = t.lower()
+        if tl not in seen:
+            seen.add(tl)
+            out.append(t)
+    return " ".join(out[:max_terms])
+
+
+def _option_query_terms(question: Question, max_terms: int = 6) -> str:
+    """The distinctive words of the MCQ OPTIONS, as a space-joined search fragment -- to APPEND to a
+    gnews query when the base results look off-topic. Live evidence: a vague question ("what caused the
+    explosion..") missed the answer article, but "+missiles" / "+CEPI" (option terms) surfaced it.
+
+    Proper names + content words (>=4, non-stopword) across all options, deduped, longest-first, capped.
+    NOT used in the FIRST search (options-in-query can dilute an already-good query) -- only the fallback."""
+    terms: list[str] = []
+    for v in (question.options or {}).values():
+        v = re.sub(r"\s+", " ", (v or "")).strip()
+        for m in _PROPER_SPAN.findall(v):
+            for w in m.split():
+                if len(w) >= 4 and w.lower() not in _OPT_STOPWORDS:
+                    terms.append(w)
+        for w in re.findall(r"[A-Za-z]+", v):
+            if len(w) >= 4 and w.lower() not in _OPT_STOPWORDS:
+                terms.append(w)
+    seen, out = set(), []
+    for t in sorted(terms, key=len, reverse=True):
+        tl = t.lower()
+        if tl not in seen:
+            seen.add(tl)
+            out.append(t)
+    return " ".join(out[:max_terms])
+
+
+def _headlines_on_topic(items: list, question: Question) -> bool:
+    """True when at least one gnews headline shares a distinctive keyword with the question -- the cheap
+    "did the base search find anything relevant?" test that gates the option-augmented re-search."""
+    keywords = _question_keywords(question)
+    if not keywords:
+        return True   # nothing distinctive to test -> don't second-guess the search.
+    return any(_relevance(t, keywords) > 0 for t, _link in items)
+
+
 def _relevance(text: str, keywords: list[str]) -> float:
     """Fraction of the question's distinctive keywords whose stem appears in `text`. 1.0 when there are
     no keywords to test (then we don't second-guess the search)."""
@@ -373,6 +475,36 @@ class WebSearchRetriever:
                 items = self._gnews_items(query)
         except Exception:
             items = []
+        # KEYWORD RE-SEARCH (#4): a full-sentence query is AND-matched by gnews, so a long question often
+        # returns 0 even though the answer article IS indexed (qids 11917/11910). When the sentence comes
+        # up empty/off-topic, retry with the SHORT entity/noun query -- found articles a sentence missed.
+        if not items or not _headlines_on_topic(items, question):
+            kwq = _keyword_query(question)
+            # >=2 terms required: a lone generic word ("explosion") matches mountains of off-topic news
+            # and would pre-empt the sharper option fallback (qid 10813 -> Caracas needs "+missiles").
+            if kwq and len(kwq.split()) >= 2 and kwq.lower() != query.lower():
+                try:
+                    kw_items = self._gnews_items(kwq + window) or self._gnews_items(kwq)
+                except Exception:
+                    kw_items = []
+                if kw_items:
+                    items = kw_items + [it for it in items if it not in kw_items]
+        # OPTION-AUGMENTED RE-SEARCH (fallback): the base query found nothing on-topic (a too-vague or
+        # body-detail-polluted question), so re-search WITH the option keywords appended -- live evidence:
+        # "+missiles"/"+CEPI" surfaced the answer article a bare query missed (qids 10813, 10659). Gated on
+        # off-topic so a working query is never diluted (the options-in-query dead end). Option-hits FIRST.
+        if not _headlines_on_topic(items, question):
+            opt_terms = _option_query_terms(question)
+            if opt_terms:
+                # #2: strip the body-witness clause so the EVENT (not the witness name) drives the search.
+                aug = (_strip_body_details(query) + " " + opt_terms).strip()
+                try:
+                    aug_items = self._gnews_items(aug + window) or self._gnews_items(aug)
+                except Exception:
+                    aug_items = []
+                if aug_items:
+                    seen = {t for t, _l in aug_items}
+                    items = aug_items + [it for it in items if it[0] not in seen]
         headlines = [
             RetrievedDoc(doc_id=f"gnews:{i}", text=t[: self.char_limit], source="google_news_rss", score=0.0)
             for i, (t, _link) in enumerate(items[: self.top_k])
