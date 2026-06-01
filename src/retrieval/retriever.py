@@ -136,14 +136,16 @@ class WebSearchRetriever:
         timeout_s: float = 6.0,
         search_fn: Optional[Callable[[str, int], list[RetrievedDoc]]] = None,
         fetch_bodies: int = 0,
+        body_mode: str = "ddg",
     ):
         self.top_k = top_k
         self.char_limit = char_limit
         self.timeout_s = timeout_s
         # An override hook -- when given, OURS it replaces (a Guardian RSS, a NewsAPI, your choice).
         self._search_fn = search_fn
-        # How many of the TOP RSS articles to also fetch the body of (0 = headlines only).
+        # How many of the TOP RSS articles to also fetch the body of (0 = headlines only), and HOW.
         self.fetch_bodies = max(0, int(fetch_bodies))
+        self.body_mode = (body_mode or "ddg").lower()
 
     def retrieve(self, question: Question) -> list[RetrievedDoc]:
         query = _query_from_question(question)
@@ -158,20 +160,28 @@ class WebSearchRetriever:
         # Default News stack: Google News RSS for HEADLINES -- keyless, raw RSS, reliable on the Colab IP.
         # The post-cutoff answer is OFTEN in the headline itself ("...lists 41 properties.. - BBC").
         try:
-            docs = self._gnews_search(query)
+            items = self._gnews_items(query)        # [(text, link)]
         except Exception:
-            docs = []
+            items = []
+        headlines = [
+            RetrievedDoc(doc_id=f"gnews:{i}", text=t[: self.char_limit], source="google_news_rss", score=0.0)
+            for i, (t, _link) in enumerate(items[: self.top_k])
+        ]
         # BODIES (best-effort): "who was quoted.." / exact numbers live in the article TEXT, not the headline.
-        # The Google-News <link> a redirect to a CONSENT WALL is (a dead end, tested) -- so DDG we ask for
-        # the DIRECT publisher URLs (it returns real bbc.co.uk/.. links) and THOSE we fetch. Bodies first
-        # (richer), headlines after. Any failure -> just the headlines, the turn never sunk.
-        if self.fetch_bodies > 0:
+        #   browser -> a headless Chromium opens the Google-News link, runs the JS past the consent wall and
+        #              reads the rendered article (the ONLY path that works on Colab).
+        #   ddg     -> DuckDuckGo's DIRECT publisher URLs, fetched with `requests` (fast, but DDG-blocked on Colab).
+        # Bodies first (richer), headlines after. Any failure -> just the headlines, the turn never sunk.
+        bodies: list[RetrievedDoc] = []
+        if self.fetch_bodies > 0 and self.body_mode != "off":
             try:
-                bodies = self._fetch_bodies_via_ddg(query, self.fetch_bodies)
+                if self.body_mode == "browser":
+                    bodies = self._fetch_bodies_via_browser([lnk for _t, lnk in items], self.fetch_bodies)
+                else:
+                    bodies = self._fetch_bodies_via_ddg(query, self.fetch_bodies)
             except Exception:
                 bodies = []
-            if bodies:
-                docs = bodies + docs[: self.top_k]
+        docs = bodies + headlines
         if docs:
             return docs
         # Headlines empty too (gnews down) -- DDG snippets a last try; then the router casts to Wikipedia.
@@ -182,11 +192,11 @@ class WebSearchRetriever:
 
     # -- internals --
 
-    def _gnews_search(self, query: str) -> list[RetrievedDoc]:
-        """Google News RSS -> top-k RAW headlines (+ publisher). Keyless, free, rule-compliant it is.
+    def _gnews_items(self, query: str) -> list[tuple]:
+        """Google News RSS -> [(headline_text, article_link)]. Keyless, raw RSS, rule-compliant it is.
 
-        The RSS `item/title` a clean "Headline - Publisher" string is -- the recent fact, often IN it.
-        Headlines ONLY here (the <link> a consent-wall redirect is; bodies via DDG direct, separately).
+        The `item/title` a clean "Headline - Publisher" string is -- the recent fact, often IN it. The
+        `item/link` the (consent-walled) article URL is -- only the BROWSER body path can open it.
         NAME this in the video ("Google News RSS").
         """
         import urllib.parse
@@ -200,8 +210,8 @@ class WebSearchRetriever:
         resp = requests.get(url, headers=self._HEADERS, timeout=self.timeout_s)
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
-        docs: list[RetrievedDoc] = []
-        for i, item in enumerate(root.iter("item")):
+        items: list[tuple] = []
+        for item in root.iter("item"):
             title = (item.findtext("title") or "").strip()
             desc = _unescape_html(_TAG.sub("", item.findtext("description") or "")).strip()
             # The description often just repeats the title (+ source list) -- append it only when it adds.
@@ -209,14 +219,26 @@ class WebSearchRetriever:
             text = re.sub(r"\s+", " ", text).strip()
             if not text:
                 continue
-            docs.append(RetrievedDoc(
-                doc_id=f"gnews:{i}",
-                text=text[: self.char_limit],
-                source="google_news_rss",
-                score=0.0,
-            ))
-            if len(docs) >= self.top_k:
+            items.append((text, (item.findtext("link") or "").strip()))
+        return items
+
+    def _fetch_bodies_via_browser(self, links: list, n: int) -> list[RetrievedDoc]:
+        """Headless Chromium opens each Google-News link, runs the JS past the consent wall, reads the
+        rendered article. The ONLY body path that works on Colab. [] when Playwright/Chromium absent."""
+        from .browser_fetch import get_browser_fetcher
+
+        fetcher = get_browser_fetcher(nav_timeout_s=min(self.timeout_s + 2.0, 8.0))
+        docs: list[RetrievedDoc] = []
+        for i, link in enumerate(links):
+            if len(docs) >= n:
                 break
+            if not link:
+                continue
+            body = fetcher.fetch(link, max_chars=self.char_limit)
+            if body:
+                docs.append(RetrievedDoc(
+                    doc_id=f"browser:body:{i}", text=body, source="headless_chromium", score=0.0,
+                ))
         return docs
 
     def _fetch_bodies_via_ddg(self, query: str, n: int) -> list[RetrievedDoc]:
@@ -415,6 +437,7 @@ class Retriever:
         timeout_s: float = 6.0,
         min_score: float = 0.0,
         news_fetch_bodies: int = 0,
+        news_body_mode: str = "ddg",
     ):
         self.top_k = top_k
         self.source = (source or "routed").lower()
@@ -424,6 +447,7 @@ class Retriever:
         self.timeout_s = timeout_s
         self.min_score = min_score   # The FAISS cosine floor, to the corpus backend passed it is.
         self.news_fetch_bodies = max(0, int(news_fetch_bodies))   # News web: how many article bodies to pull.
+        self.news_body_mode = (news_body_mode or "ddg").lower()   # ... and how: off | ddg | browser.
         # The backends, on first use built they are -- a dict of name -> instance, cached here.
         self._cache: dict[str, object] = {}
 
@@ -442,7 +466,7 @@ class Retriever:
             web_chars = 900 if self.news_fetch_bodies > 0 else min(self.char_limit, 400)
             self._cache["web"] = WebSearchRetriever(
                 top_k=self.top_k, char_limit=web_chars, timeout_s=self.timeout_s,
-                fetch_bodies=self.news_fetch_bodies,
+                fetch_bodies=self.news_fetch_bodies, body_mode=self.news_body_mode,
             )
         return self._cache["web"]  # type: ignore[return-value]
 
@@ -503,5 +527,8 @@ def build_retriever(retrieval_cfg, **overrides) -> Optional[Retriever]:
         min_score=overrides.get("min_score", getattr(retrieval_cfg, "min_score", 0.0)),
         news_fetch_bodies=overrides.get(
             "news_fetch_bodies", getattr(retrieval_cfg, "news_fetch_bodies", 0)
+        ),
+        news_body_mode=overrides.get(
+            "news_body_mode", getattr(retrieval_cfg, "news_body_mode", "ddg")
         ),
     )

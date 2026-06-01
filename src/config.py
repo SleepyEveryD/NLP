@@ -38,6 +38,13 @@ class RetrievalConfig:
     # 11415 died with headlines alone). Best-effort + crash-safe: a fetch fail -> that item keeps just
     # its headline. Each body is ONE extra HTTP with a TIGHT timeout, so the 30s wall it respects.
     news_fetch_bodies: int = 0
+    # HOW to fetch those bodies: "off" | "ddg" | "browser".
+    #   "ddg"     -- DuckDuckGo gives the DIRECT publisher URL, `requests` fetches it. Fast, but DDG is
+    #                BLOCKED on the Colab IP (returns nothing there) -- so on Colab this yields no bodies.
+    #   "browser" -- a headless Chromium opens the Google-News link, RUNS the JS (past the consent wall +
+    #                redirect) and reads the rendered article. The ONLY path that gets bodies on Colab; it
+    #                needs `playwright install chromium` and is ~3-4s/article. Name "headless Chromium" in the video.
+    news_body_mode: str = "ddg"
 
 
 @dataclass
