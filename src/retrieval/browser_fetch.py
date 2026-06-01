@@ -101,8 +101,8 @@ class BrowserArticleFetcher:
                     except Exception:
                         continue
             try:
-                pg.wait_for_load_state("networkidle", timeout=4000)
-            except Exception:
+                pg.wait_for_load_state("networkidle", timeout=2500)   # trimmed (was 4000) -- the 30s-wall
+            except Exception:                                          # margin matters more than late-loading ads.
                 pass
             paras = pg.eval_on_selector_all("p", "els => els.map(e => e.innerText)")
             out, total = [], 0

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -105,6 +106,15 @@ def _gnews_date_window(question: Question) -> str:
 # prompt budget on purpose: the answer sentence ("Prof X said..") often sits mid-article, so we pull a
 # lot, then keep only the relevant windows. ~3-4s/fetch unchanged -- this is post-fetch string work.
 _RAW_BODY_CHARS = 3500
+
+# LATENCY GUARD for the (slow) browser body path. The relevance filter routes ~44% of News turns to the
+# headless browser, and each body fetch is ~3-4s -- a 10-round News test showed browser turns at a 19.8s
+# median (vs 10.9s on Guardian) and ONE 31s turn that the server timed out -> a level-0 death (0 points).
+# A timeout is worse than a wrong guess, so we cap the browser stage HARD: at most this many bodies, and a
+# wall-clock budget after which we stop fetching (the headlines still carry the turn). Guardian (API, ~0.2s)
+# is NOT capped here -- only the browser is the latency risk.
+_MAX_BROWSER_BODIES = 2
+_BROWSER_BUDGET_S = 12.0
 
 # A run of Capitalised words -- a proper name / place an MCQ option carries ("Naveed Sattar", "Red Sea").
 _PROPER_SPAN = re.compile(r"\b[A-Z][a-zA-Z.'’-]+(?:\s+[A-Z][a-zA-Z.'’-]+)*")
@@ -378,30 +388,31 @@ class WebSearchRetriever:
                 guardian = self._guardian_bodies(query, question, self.fetch_bodies)
             except Exception:
                 guardian = []
-            # RELEVANCE GATE: Guardian is tried first (fast), but only KEPT when a body actually matches
-            # the question. Off-topic Guardian hits (the answer article isn't the Guardian's) used to be
-            # returned anyway, burying the one on-topic gnews link -- the measles/World-Cup miss (qid
-            # 11067). Now an off-topic (or empty) Guardian result falls THROUGH to the broad web path,
-            # which opens the gnews top links (any publisher) via browser/ddg.
+            # RELEVANCE FILTER (per doc, not per set): Guardian is tried first (fast), but each body is
+            # KEPT only when it actually matches the question. Off-topic Guardian hits (the answer article
+            # isn't the Guardian's) used to be returned wholesale -- burying the one on-topic gnews link
+            # (the measles/World-Cup miss, qid 11067) AND, worse, DILUTING a good body with junk ones (the
+            # WHO-treaty miss, where 2 of 3 Guardian docs were a nude-art review + Eurovision). Now:
+            #   * keep the Guardian bodies that are on-topic; if ANY are, use only those;
+            #   * if NONE are, fall THROUGH to the broad web path (gnews links via browser/ddg);
+            #   * then drop the junk there too (a captcha/Cloudflare block page scores ~0).
             keywords = _question_keywords(question)
-            guardian_ok = bool(guardian) and any(
-                _relevance(d.text, keywords) >= _GUARDIAN_RELEVANCE_MIN for d in guardian
-            )
-            if guardian_ok:
-                bodies = guardian
+            guardian_rel = [d for d in guardian if _relevance(d.text, keywords) >= _GUARDIAN_RELEVANCE_MIN]
+            if guardian_rel:
+                bodies = guardian_rel
             else:
                 try:
                     if self.body_mode == "browser":
-                        bodies = self._fetch_bodies_via_browser(
+                        fetched = self._fetch_bodies_via_browser(
                             [lnk for _t, lnk in items], self.fetch_bodies, question)
                     else:
-                        bodies = self._fetch_bodies_via_ddg(query, self.fetch_bodies, question)
+                        fetched = self._fetch_bodies_via_ddg(query, self.fetch_bodies, question)
                 except Exception:
-                    bodies = []
-                # The broad path came back empty (browser blocked, no direct URL) -- then whatever
-                # Guardian gave is better than nothing (crash-safe: never regress to zero bodies).
-                if not bodies and guardian:
-                    bodies = guardian
+                    fetched = []
+                # Drop the individually-junk fetched bodies (block/captcha pages) -- but if that leaves
+                # nothing, keep what we got (a weak body beats none). Last resort: Guardian, even off-topic.
+                fetched_rel = [d for d in fetched if _relevance(d.text, keywords) >= _GUARDIAN_RELEVANCE_MIN]
+                bodies = fetched_rel or fetched or guardian
         docs = bodies + headlines
         if docs:
             return docs
@@ -488,9 +499,13 @@ class WebSearchRetriever:
         from .browser_fetch import get_browser_fetcher
 
         fetcher = get_browser_fetcher(nav_timeout_s=min(self.timeout_s + 2.0, 8.0))
+        n = min(n, _MAX_BROWSER_BODIES)          # cap COUNT -- the 3rd browser body is what blew the 30s wall.
+        start = time.monotonic()
         docs: list[RetrievedDoc] = []
         for i, link in enumerate(links):
             if len(docs) >= n:
+                break
+            if time.monotonic() - start > _BROWSER_BUDGET_S:   # WALL guard -- stop before the 30s timeout.
                 break
             if not link:
                 continue
