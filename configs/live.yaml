@@ -33,3 +33,7 @@ retrieval:
                                 # CONSERVATIVE -- e5-small scores relevant passages ~0.80-0.88, clear noise <0.75,
                                 # so 0.70 trims only obvious garbage. Raise toward 0.78 if noise still lands; set
                                 # 0.0 to disable. Below the floor everything -> [] and routed falls back to Wikipedia.
+  news_fetch_bodies: 2          # NEWS only: fetch the BODY of the top-2 Google-News articles (0 = headlines only).
+                                # "who was quoted.." / exact numbers live in the TEXT, not the headline (qid 11415).
+                                # Best-effort + crash-safe; each body is 1 HTTP @ <=4s timeout, so the 30s wall holds.
+                                # Lower to 1 (or 0) if any News turn nears the wall.

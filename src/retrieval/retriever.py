@@ -120,12 +120,15 @@ class WebSearchRetriever:
         char_limit: int = 400,
         timeout_s: float = 6.0,
         search_fn: Optional[Callable[[str, int], list[RetrievedDoc]]] = None,
+        fetch_bodies: int = 0,
     ):
         self.top_k = top_k
         self.char_limit = char_limit
         self.timeout_s = timeout_s
         # An override hook -- when given, OURS it replaces (a Guardian RSS, a NewsAPI, your choice).
         self._search_fn = search_fn
+        # How many of the TOP RSS articles to also fetch the body of (0 = headlines only).
+        self.fetch_bodies = max(0, int(fetch_bodies))
 
     def retrieve(self, question: Question) -> list[RetrievedDoc]:
         query = _query_from_question(question)
@@ -156,8 +159,9 @@ class WebSearchRetriever:
     def _gnews_search(self, query: str) -> list[RetrievedDoc]:
         """Google News RSS -> top-k RAW headlines (+ source). Keyless, free, rule-compliant it is.
 
-        The RSS `item/title` a clean "Headline - Publisher" string is -- the recent fact, often IN it.
-        NAME this in the video ("Google News RSS"), the assignment requires.
+        The RSS `item/title` a clean "Headline - Publisher" string is -- the gist, often IN it. For the
+        TOP `fetch_bodies` items the ARTICLE BODY too we pull (best-effort) -- "who was quoted.." / exact
+        numbers the headline omits, the body carries (qid 11415). NAME this in the video ("Google News RSS").
         """
         import urllib.parse
         import xml.etree.ElementTree as ET
@@ -176,6 +180,11 @@ class WebSearchRetriever:
             desc = _unescape_html(_TAG.sub("", item.findtext("description") or "")).strip()
             # The description often just repeats the title (+ source list) -- append it only when it adds.
             text = title if (not desc or desc == title) else f"{title}. {desc}"
+            # The TOP few articles -- the body too, best-effort, fetch it we do (the detail the headline drops).
+            if i < self.fetch_bodies:
+                body = self._fetch_article_text(item.findtext("link") or "")
+                if body:
+                    text = f"{text}. {body}"
             text = re.sub(r"\s+", " ", text).strip()
             if not text:
                 continue
@@ -188,6 +197,35 @@ class WebSearchRetriever:
             if len(docs) >= self.top_k:
                 break
         return docs
+
+    def _fetch_article_text(self, link: str, max_chars: int = 700) -> str:
+        """Best-effort: follow the article link, its paragraph text return. "" on ANY failure.
+
+        Google-News links a redirect are -- `allow_redirects` to the publisher we let it carry. The
+        page's `<p>..</p>` we crudely harvest (boilerplate short ones skipped); RAW article text it is,
+        no synthesis. A TIGHT timeout (<= 4s) the 30s wall protects -- a slow site never the turn it sinks.
+        """
+        if not link:
+            return ""
+        try:
+            resp = requests.get(
+                link, headers=self._HEADERS,
+                timeout=min(self.timeout_s, 4.0), allow_redirects=True,
+            )
+            resp.raise_for_status()
+            paras: list[str] = []
+            total = 0
+            for raw in re.findall(r"<p[^>]*>(.*?)</p>", resp.text, re.IGNORECASE | re.DOTALL):
+                t = _unescape_html(_TAG.sub("", raw)).strip()
+                if len(t) < 40:        # Nav / caption / cookie boilerplate -- the real body it is not.
+                    continue
+                paras.append(t)
+                total += len(t)
+                if total >= max_chars:
+                    break
+            return re.sub(r"\s+", " ", " ".join(paras)).strip()[:max_chars]
+        except Exception:
+            return ""
 
     def _ddg_search(self, query: str) -> list[RetrievedDoc]:
         resp = requests.post(
@@ -322,6 +360,7 @@ class Retriever:
         char_limit: int = 600,
         timeout_s: float = 6.0,
         min_score: float = 0.0,
+        news_fetch_bodies: int = 0,
     ):
         self.top_k = top_k
         self.source = (source or "routed").lower()
@@ -330,6 +369,7 @@ class Retriever:
         self.char_limit = char_limit
         self.timeout_s = timeout_s
         self.min_score = min_score   # The FAISS cosine floor, to the corpus backend passed it is.
+        self.news_fetch_bodies = max(0, int(news_fetch_bodies))   # News web: how many article bodies to pull.
         # The backends, on first use built they are -- a dict of name -> instance, cached here.
         self._cache: dict[str, object] = {}
 
@@ -344,8 +384,11 @@ class Retriever:
 
     def _web(self) -> WebSearchRetriever:
         if "web" not in self._cache:
+            # Headlines only -> 400 chars plenty. Bodies fetched -> room for the article text we leave (900).
+            web_chars = 900 if self.news_fetch_bodies > 0 else min(self.char_limit, 400)
             self._cache["web"] = WebSearchRetriever(
-                top_k=self.top_k, char_limit=min(self.char_limit, 400), timeout_s=self.timeout_s,
+                top_k=self.top_k, char_limit=web_chars, timeout_s=self.timeout_s,
+                fetch_bodies=self.news_fetch_bodies,
             )
         return self._cache["web"]  # type: ignore[return-value]
 
@@ -404,4 +447,7 @@ def build_retriever(retrieval_cfg, **overrides) -> Optional[Retriever]:
         index_path=overrides.get("index_path", getattr(retrieval_cfg, "index_path", None)),
         embedder=overrides.get("embedder", getattr(retrieval_cfg, "embedder", "intfloat/multilingual-e5-small")),
         min_score=overrides.get("min_score", getattr(retrieval_cfg, "min_score", 0.0)),
+        news_fetch_bodies=overrides.get(
+            "news_fetch_bodies", getattr(retrieval_cfg, "news_fetch_bodies", 0)
+        ),
     )

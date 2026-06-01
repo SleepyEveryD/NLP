@@ -33,6 +33,11 @@ class RetrievalConfig:
     # (e.g. a name-collision pulling celebrity pages). Below the floor everything? -> [] and the
     # routed retriever falls back to live Wikipedia. Web/Wikipedia docs (no real score) are unaffected.
     min_score: float = 0.0
+    # NEWS only: how many top Google-News-RSS articles to fetch the BODY of (0 = headlines only). The
+    # headline carries the gist, but "who was quoted.." / exact numbers live in the article TEXT (qid
+    # 11415 died with headlines alone). Best-effort + crash-safe: a fetch fail -> that item keeps just
+    # its headline. Each body is ONE extra HTTP with a TIGHT timeout, so the 30s wall it respects.
+    news_fetch_bodies: int = 0
 
 
 @dataclass
