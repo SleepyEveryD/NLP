@@ -96,10 +96,12 @@ def _unescape_html(s: str) -> str:
 
 
 class WebSearchRetriever:
-    """query -> top-k RAW web result snippets. DuckDuckGo's keyless HTML endpoint, this scrapes.
+    """query -> top-k RAW web result snippets. Google News RSS first, DuckDuckGo HTML second.
 
     For NEWS only this is -- the post-cutoff events Wikipedia cannot know (a Malian minister killed on a
-    2026 date, a whale named Timmy). RAW snippets we return, the rule honouring -- no answer we synthesise.
+    2026 date, a whale named Timmy). RAW snippets/headlines we return, the rule honouring -- no answer we
+    synthesise. Google News RSS the default primary it is (keyless, raw, reliable on Colab where the DDG
+    scrape gets blocked); NAME it in the video, you must.
 
     Brittle, web scraping inherently is (a layout change, a bot block, a 429). So crash-safe entirely it
     stays: empty list on ANY failure. A `search_fn` injection point we expose -- a different free source
@@ -129,14 +131,63 @@ class WebSearchRetriever:
         query = _query_from_question(question)
         if not query:
             return []
-        try:
-            if self._search_fn is not None:
+        # An injected source (the video-named API), if given -- OURS it replaces entirely.
+        if self._search_fn is not None:
+            try:
                 return self._search_fn(query, self.top_k)
+            except Exception:
+                return []
+        # Default News stack: Google News RSS FIRST -- keyless, raw RSS, and (unlike the DDG HTML scrape)
+        # reliable on the Colab IP. The post-cutoff answer is OFTEN in the headline itself ("...lists 41
+        # properties.."). DuckDuckGo a second source it is; both empty -> [] and the router casts to Wikipedia.
+        try:
+            docs = self._gnews_search(query)
+        except Exception:
+            docs = []
+        if docs:
+            return docs
+        try:
             return self._ddg_search(query)
         except Exception:
             return []
 
     # -- internals --
+
+    def _gnews_search(self, query: str) -> list[RetrievedDoc]:
+        """Google News RSS -> top-k RAW headlines (+ source). Keyless, free, rule-compliant it is.
+
+        The RSS `item/title` a clean "Headline - Publisher" string is -- the recent fact, often IN it.
+        NAME this in the video ("Google News RSS"), the assignment requires.
+        """
+        import urllib.parse
+        import xml.etree.ElementTree as ET
+
+        url = (
+            "https://news.google.com/rss/search?q="
+            + urllib.parse.quote(query)
+            + "&hl=en-US&gl=US&ceid=US:en"
+        )
+        resp = requests.get(url, headers=self._HEADERS, timeout=self.timeout_s)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        docs: list[RetrievedDoc] = []
+        for i, item in enumerate(root.iter("item")):
+            title = (item.findtext("title") or "").strip()
+            desc = _unescape_html(_TAG.sub("", item.findtext("description") or "")).strip()
+            # The description often just repeats the title (+ source list) -- append it only when it adds.
+            text = title if (not desc or desc == title) else f"{title}. {desc}"
+            text = re.sub(r"\s+", " ", text).strip()
+            if not text:
+                continue
+            docs.append(RetrievedDoc(
+                doc_id=f"gnews:{i}",
+                text=text[: self.char_limit],
+                source="google_news_rss",
+                score=0.0,
+            ))
+            if len(docs) >= self.top_k:
+                break
+        return docs
 
     def _ddg_search(self, query: str) -> list[RetrievedDoc]:
         resp = requests.post(
