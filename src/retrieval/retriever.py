@@ -17,6 +17,7 @@ still reasons over it, it does. No backend ever an answer generates -- raw chunk
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Callable, Optional
@@ -74,24 +75,27 @@ def _query_from_question(question: Question, max_chars: int = 300) -> str:
 _ISO_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
 
 
-def _gnews_date_window(question: Question, before_days: int = 3, after_days: int = 2) -> str:
-    """A Google-News `after:.. before:..` operator from the question's ISO date, build it we do (else "").
+def _date_range(question: Question, before_days: int = 3, after_days: int = 2):
+    """(lo_iso, hi_iso) around the question's ISO date, or (None, None). Shared by gnews + Guardian.
 
-    News questions a date carry ("the article from 2026-05-14"). The text we STRIP it from (free-text it
-    is noise -- it drags the query off-topic); but as a DATE-RANGE operator, re-inject it we do -- the
-    temporally-irrelevant results, it culls (tested: 5 generic hits -> the right window). Google-only this
-    is, so ONLY the gnews query gets it -- the shared `_query_from_question`, untouched it stays."""
+    News questions a date carry ("the article from 2026-05-14"). As free text it is NOISE (drags the
+    query off-topic), but as a DATE RANGE it culls the temporally-irrelevant -- so the date we lift out
+    and re-inject as a range operator (Google `after:/before:`, Guardian `from-date/to-date`)."""
     m = _ISO_DATE.search(question.text or "")
     if not m:
-        return ""
+        return None, None
     try:
         from datetime import date, timedelta
         d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        lo = d - timedelta(days=after_days)
-        hi = d + timedelta(days=before_days)
-        return f" after:{lo.isoformat()} before:{hi.isoformat()}"
+        return (d - timedelta(days=after_days)).isoformat(), (d + timedelta(days=before_days)).isoformat()
     except Exception:
-        return ""
+        return None, None
+
+
+def _gnews_date_window(question: Question) -> str:
+    """The Google-News ` after:.. before:..` operator from the question's date (else "")."""
+    lo, hi = _date_range(question)
+    return f" after:{lo} before:{hi}" if lo else ""
 
 
 # --------------------------------------------------------------------------- #
@@ -160,6 +164,7 @@ class WebSearchRetriever:
         search_fn: Optional[Callable[[str, int], list[RetrievedDoc]]] = None,
         fetch_bodies: int = 0,
         body_mode: str = "ddg",
+        guardian_api_key: str = "",
     ):
         self.top_k = top_k
         self.char_limit = char_limit
@@ -169,6 +174,8 @@ class WebSearchRetriever:
         # How many of the TOP RSS articles to also fetch the body of (0 = headlines only), and HOW.
         self.fetch_bodies = max(0, int(fetch_bodies))
         self.body_mode = (body_mode or "ddg").lower()
+        # The Guardian Open Platform key -- when present, the FAST primary body source it is (env fallback).
+        self.guardian_api_key = guardian_api_key or os.environ.get("GUARDIAN_API_KEY", "")
 
     def retrieve(self, question: Question) -> list[RetrievedDoc]:
         query = _query_from_question(question)
@@ -196,19 +203,24 @@ class WebSearchRetriever:
             for i, (t, _link) in enumerate(items[: self.top_k])
         ]
         # BODIES (best-effort): "who was quoted.." / exact numbers live in the article TEXT, not the headline.
-        #   browser -> a headless Chromium opens the Google-News link, runs the JS past the consent wall and
-        #              reads the rendered article (the ONLY path that works on Colab).
-        #   ddg     -> DuckDuckGo's DIRECT publisher URLs, fetched with `requests` (fast, but DDG-blocked on Colab).
+        #   1) Guardian API FIRST -- raw `bodyText` in ONE ~0.2s call (no browser, no consent wall). Many of
+        #      these questions' answer articles ARE the Guardian, so most turns end here, FAST (~4s total).
+        #   2) Else (non-Guardian story) -> the broad fallback: browser (Colab) or ddg-direct.
         # Bodies first (richer), headlines after. Any failure -> just the headlines, the turn never sunk.
         bodies: list[RetrievedDoc] = []
         if self.fetch_bodies > 0 and self.body_mode != "off":
             try:
-                if self.body_mode == "browser":
-                    bodies = self._fetch_bodies_via_browser([lnk for _t, lnk in items], self.fetch_bodies)
-                else:
-                    bodies = self._fetch_bodies_via_ddg(query, self.fetch_bodies)
+                bodies = self._guardian_bodies(query, question, self.fetch_bodies)
             except Exception:
                 bodies = []
+            if not bodies:
+                try:
+                    if self.body_mode == "browser":
+                        bodies = self._fetch_bodies_via_browser([lnk for _t, lnk in items], self.fetch_bodies)
+                    else:
+                        bodies = self._fetch_bodies_via_ddg(query, self.fetch_bodies)
+                except Exception:
+                    bodies = []
         docs = bodies + headlines
         if docs:
             return docs
@@ -249,6 +261,40 @@ class WebSearchRetriever:
                 continue
             items.append((text, (item.findtext("link") or "").strip()))
         return items
+
+    def _guardian_bodies(self, query: str, question: Question, n: int) -> list[RetrievedDoc]:
+        """The Guardian Content API -> top-`n` articles WITH full `bodyText`, in ONE call. [] if no key,
+        no match, or any error. Free, raw journalism (no synthesis), ~0.2s -- no browser, no consent wall.
+
+        Only the Guardian's OWN content it covers, but these questions' answer articles often ARE the
+        Guardian -> most News turns end here, fast. NAME "Guardian Open Platform API" in the video."""
+        if not self.guardian_api_key:
+            return []
+        params = {
+            "q": query,
+            "show-fields": "bodyText",
+            "order-by": "relevance",
+            "page-size": max(1, n),
+            "api-key": self.guardian_api_key,
+        }
+        lo, hi = _date_range(question)
+        if lo:
+            params["from-date"], params["to-date"] = lo, hi
+        resp = requests.get(
+            "https://content.guardianapis.com/search",
+            params=params, headers=self._HEADERS, timeout=self.timeout_s,
+        )
+        resp.raise_for_status()
+        results = (resp.json().get("response") or {}).get("results") or []
+        docs: list[RetrievedDoc] = []
+        for i, art in enumerate(results[:n]):
+            body = re.sub(r"\s+", " ", ((art.get("fields") or {}).get("bodyText") or "")).strip()
+            if body:
+                docs.append(RetrievedDoc(
+                    doc_id=f"guardian:{i}", text=body[: self.char_limit],
+                    source="theguardian.com", score=0.0,
+                ))
+        return docs
 
     def _fetch_bodies_via_browser(self, links: list, n: int) -> list[RetrievedDoc]:
         """Headless Chromium opens each Google-News link, runs the JS past the consent wall, reads the
@@ -466,6 +512,7 @@ class Retriever:
         min_score: float = 0.0,
         news_fetch_bodies: int = 0,
         news_body_mode: str = "ddg",
+        guardian_api_key: str = "",
     ):
         self.top_k = top_k
         self.source = (source or "routed").lower()
@@ -476,6 +523,7 @@ class Retriever:
         self.min_score = min_score   # The FAISS cosine floor, to the corpus backend passed it is.
         self.news_fetch_bodies = max(0, int(news_fetch_bodies))   # News web: how many article bodies to pull.
         self.news_body_mode = (news_body_mode or "ddg").lower()   # ... and how: off | ddg | browser.
+        self.guardian_api_key = guardian_api_key   # News: the FAST primary body source (when set).
         # The backends, on first use built they are -- a dict of name -> instance, cached here.
         self._cache: dict[str, object] = {}
 
@@ -495,6 +543,7 @@ class Retriever:
             self._cache["web"] = WebSearchRetriever(
                 top_k=self.top_k, char_limit=web_chars, timeout_s=self.timeout_s,
                 fetch_bodies=self.news_fetch_bodies, body_mode=self.news_body_mode,
+                guardian_api_key=self.guardian_api_key,
             )
         return self._cache["web"]  # type: ignore[return-value]
 
@@ -558,5 +607,8 @@ def build_retriever(retrieval_cfg, **overrides) -> Optional[Retriever]:
         ),
         news_body_mode=overrides.get(
             "news_body_mode", getattr(retrieval_cfg, "news_body_mode", "ddg")
+        ),
+        guardian_api_key=overrides.get(
+            "guardian_api_key", getattr(retrieval_cfg, "guardian_api_key", "")
         ),
     )

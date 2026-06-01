@@ -45,6 +45,11 @@ class RetrievalConfig:
     #                redirect) and reads the rendered article. The ONLY path that gets bodies on Colab; it
     #                needs `playwright install chromium` and is ~3-4s/article. Name "headless Chromium" in the video.
     news_body_mode: str = "ddg"
+    # The Guardian Open Platform key. When set, the News body comes FIRST from the Guardian Content API
+    # (free, raw `bodyText` in ONE ~0.2s call -- no browser, no consent wall) and only NON-Guardian stories
+    # fall back to `news_body_mode`. A SECRET it is -- NEVER in this YAML; the notebook injects it from a
+    # Colab secret. Empty -> the Guardian path simply skipped. Name "Guardian Open Platform API" in the video.
+    guardian_api_key: str = ""
 
 
 @dataclass
