@@ -95,6 +95,21 @@ def _unescape_html(s: str) -> str:
     return _html.unescape(s)
 
 
+def _is_prose(t: str) -> bool:
+    """True when a paragraph REAL article prose looks like -- not nav/menu/cookie/JS boilerplate.
+
+    The tells of body text: long enough, a sentence end it has, and real word-spacing (nav menus mash
+    CamelCase with few spaces; JS blobs carry `window.`/`{`). Crude but it keeps the article, drops the chrome.
+    """
+    if len(t) < 50 or len(t.split()) < 10:
+        return False
+    if "window." in t or "function(" in t or t[:30].count("{"):
+        return False
+    if ". " not in t and not t.endswith("."):
+        return False
+    return (t.count(" ") / len(t)) >= 0.12
+
+
 class WebSearchRetriever:
     """query -> top-k RAW web result snippets. Google News RSS first, DuckDuckGo HTML second.
 
@@ -140,15 +155,26 @@ class WebSearchRetriever:
                 return self._search_fn(query, self.top_k)
             except Exception:
                 return []
-        # Default News stack: Google News RSS FIRST -- keyless, raw RSS, and (unlike the DDG HTML scrape)
-        # reliable on the Colab IP. The post-cutoff answer is OFTEN in the headline itself ("...lists 41
-        # properties.."). DuckDuckGo a second source it is; both empty -> [] and the router casts to Wikipedia.
+        # Default News stack: Google News RSS for HEADLINES -- keyless, raw RSS, reliable on the Colab IP.
+        # The post-cutoff answer is OFTEN in the headline itself ("...lists 41 properties.. - BBC").
         try:
             docs = self._gnews_search(query)
         except Exception:
             docs = []
+        # BODIES (best-effort): "who was quoted.." / exact numbers live in the article TEXT, not the headline.
+        # The Google-News <link> a redirect to a CONSENT WALL is (a dead end, tested) -- so DDG we ask for
+        # the DIRECT publisher URLs (it returns real bbc.co.uk/.. links) and THOSE we fetch. Bodies first
+        # (richer), headlines after. Any failure -> just the headlines, the turn never sunk.
+        if self.fetch_bodies > 0:
+            try:
+                bodies = self._fetch_bodies_via_ddg(query, self.fetch_bodies)
+            except Exception:
+                bodies = []
+            if bodies:
+                docs = bodies + docs[: self.top_k]
         if docs:
             return docs
+        # Headlines empty too (gnews down) -- DDG snippets a last try; then the router casts to Wikipedia.
         try:
             return self._ddg_search(query)
         except Exception:
@@ -157,11 +183,11 @@ class WebSearchRetriever:
     # -- internals --
 
     def _gnews_search(self, query: str) -> list[RetrievedDoc]:
-        """Google News RSS -> top-k RAW headlines (+ source). Keyless, free, rule-compliant it is.
+        """Google News RSS -> top-k RAW headlines (+ publisher). Keyless, free, rule-compliant it is.
 
-        The RSS `item/title` a clean "Headline - Publisher" string is -- the gist, often IN it. For the
-        TOP `fetch_bodies` items the ARTICLE BODY too we pull (best-effort) -- "who was quoted.." / exact
-        numbers the headline omits, the body carries (qid 11415). NAME this in the video ("Google News RSS").
+        The RSS `item/title` a clean "Headline - Publisher" string is -- the recent fact, often IN it.
+        Headlines ONLY here (the <link> a consent-wall redirect is; bodies via DDG direct, separately).
+        NAME this in the video ("Google News RSS").
         """
         import urllib.parse
         import xml.etree.ElementTree as ET
@@ -180,11 +206,6 @@ class WebSearchRetriever:
             desc = _unescape_html(_TAG.sub("", item.findtext("description") or "")).strip()
             # The description often just repeats the title (+ source list) -- append it only when it adds.
             text = title if (not desc or desc == title) else f"{title}. {desc}"
-            # The TOP few articles -- the body too, best-effort, fetch it we do (the detail the headline drops).
-            if i < self.fetch_bodies:
-                body = self._fetch_article_text(item.findtext("link") or "")
-                if body:
-                    text = f"{text}. {body}"
             text = re.sub(r"\s+", " ", text).strip()
             if not text:
                 continue
@@ -198,32 +219,65 @@ class WebSearchRetriever:
                 break
         return docs
 
-    def _fetch_article_text(self, link: str, max_chars: int = 700) -> str:
-        """Best-effort: follow the article link, its paragraph text return. "" on ANY failure.
+    def _fetch_bodies_via_ddg(self, query: str, n: int) -> list[RetrievedDoc]:
+        """DuckDuckGo HTML -> the top-`n` DIRECT publisher URLs -> their article BODIES. [] on any failure.
 
-        Google-News links a redirect are -- `allow_redirects` to the publisher we let it carry. The
-        page's `<p>..</p>` we crudely harvest (boilerplate short ones skipped); RAW article text it is,
-        no synthesis. A TIGHT timeout (<= 4s) the 30s wall protects -- a slow site never the turn it sinks.
+        DDG result links carry the real URL in a `uddg=` redirect param (bbc.co.uk/.., not a Google
+        consent wall) -- decode it, fetch it, the prose paragraphs harvest. RAW article text, no synthesis.
         """
-        if not link:
+        import urllib.parse
+
+        resp = requests.post(
+            self._URL, data={"q": query}, headers=self._HEADERS, timeout=self.timeout_s,
+        )
+        resp.raise_for_status()
+        urls: list[str] = []
+        for href in re.findall(r'result__a"[^>]*href="([^"]+)"', resp.text):
+            m = re.search(r"uddg=([^&]+)", href)
+            real = urllib.parse.unquote(m.group(1)) if m else href
+            if real.startswith("//"):
+                real = "https:" + real
+            if real.startswith("http") and "duckduckgo.com" not in real:
+                urls.append(real)
+            if len(urls) >= n:
+                break
+        docs: list[RetrievedDoc] = []
+        for i, u in enumerate(urls):
+            body = self._fetch_article_text(u)
+            if body:
+                host = re.sub(r"^https?://(www\.)?", "", u).split("/")[0]
+                docs.append(RetrievedDoc(
+                    doc_id=f"web:body:{i}", text=body, source=host, score=0.0,
+                ))
+        return docs
+
+    def _fetch_article_text(self, url: str, max_chars: int = 700) -> str:
+        """Best-effort: fetch a DIRECT publisher URL, its PROSE paragraph text return. "" on ANY failure.
+
+        The `<p>..</p>` we harvest, but keep only PROSE -- a paragraph with a sentence end and real
+        word-spacing. This drops the nav/menu/cookie boilerplate (mashed CamelCase, `window.WIZ_..` JS)
+        that else poisons the context. RAW article text it is, no synthesis. A TIGHT timeout (<=4s) the
+        30s wall protects -- a slow site never the turn it sinks.
+        """
+        if not url:
             return ""
         try:
             resp = requests.get(
-                link, headers=self._HEADERS,
+                url, headers=self._HEADERS,
                 timeout=min(self.timeout_s, 4.0), allow_redirects=True,
             )
             resp.raise_for_status()
             paras: list[str] = []
             total = 0
             for raw in re.findall(r"<p[^>]*>(.*?)</p>", resp.text, re.IGNORECASE | re.DOTALL):
-                t = _unescape_html(_TAG.sub("", raw)).strip()
-                if len(t) < 40:        # Nav / caption / cookie boilerplate -- the real body it is not.
+                t = re.sub(r"\s+", " ", _unescape_html(_TAG.sub("", raw))).strip()
+                if not _is_prose(t):
                     continue
                 paras.append(t)
                 total += len(t)
                 if total >= max_chars:
                     break
-            return re.sub(r"\s+", " ", " ".join(paras)).strip()[:max_chars]
+            return " ".join(paras).strip()[:max_chars]
         except Exception:
             return ""
 
