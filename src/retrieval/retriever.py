@@ -99,6 +99,86 @@ def _gnews_date_window(question: Question) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Option-aware body focusing -- the attribution/detail fix.
+# --------------------------------------------------------------------------- #
+# How much RAW article text the body fetchers harvest BEFORE we focus-select. Bigger than the per-doc
+# prompt budget on purpose: the answer sentence ("Prof X said..") often sits mid-article, so we pull a
+# lot, then keep only the relevant windows. ~3-4s/fetch unchanged -- this is post-fetch string work.
+_RAW_BODY_CHARS = 3500
+
+# A run of Capitalised words -- a proper name / place an MCQ option carries ("Naveed Sattar", "Red Sea").
+_PROPER_SPAN = re.compile(r"\b[A-Z][a-zA-Z.'’-]+(?:\s+[A-Z][a-zA-Z.'’-]+)*")
+
+
+def _option_terms(question: Question) -> list[str]:
+    """Distinctive lowercase search terms lifted from the MCQ option VALUES -- for option-aware body
+    focusing. Each option's full text, plus its Capitalised proper-name spans -- the name/place the
+    question turns on. Longest-first, so a full name beats a bare surname. Empty for open questions.
+
+    NB: we use these to SELECT which slice of an ALREADY-RETRIEVED body to keep -- NOT to build the
+    search query (query-side option injection was a dead end: it dragged the search off-topic)."""
+    terms: list[str] = []
+    for v in (question.options or {}).values():
+        v = re.sub(r"\s+", " ", (v or "")).strip()
+        if len(v) < 3:
+            continue
+        terms.append(v.lower())
+        for m in _PROPER_SPAN.findall(v):
+            if len(m) >= 4 and m.lower() != v.lower():
+                terms.append(m.lower())
+    seen, out = set(), []
+    for t in sorted(terms, key=len, reverse=True):
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def _focus_body(body: str, question: Question, char_limit: int,
+                window: int = 260, head_chars: int = 280) -> str:
+    """An option-aware slice of an article body, capped at `char_limit`.
+
+    Attribution/detail News questions ("which expert said..", "how many..") hinge on a sentence that
+    often sits MID-article -- a plain head-truncation to char_limit drops it. So when the options give
+    us search terms (a name, a place), we KEEP the windows of text around where those terms appear,
+    plus the lead (topic/setup). No option term lands in this article -> head-truncation, the old safe
+    behaviour (no regression for questions whose options aren't verbatim in the text)."""
+    body = re.sub(r"\s+", " ", body or "").strip()
+    if len(body) <= char_limit:
+        return body
+    low = body.lower()
+    spans: list[list[int]] = [[0, head_chars]]   # the lead, always kept (context for the windows).
+    for t in _option_terms(question):
+        start = 0
+        while True:
+            i = low.find(t, start)
+            if i < 0:
+                break
+            spans.append([max(0, i - window), min(len(body), i + len(t) + window)])
+            start = i + len(t)
+    if len(spans) == 1:                 # only the lead -> no option term found -> head truncation.
+        return body[:char_limit]
+    spans.sort()
+    merged: list[list[int]] = []
+    for s, e in spans:                  # adjacent/overlapping windows, fuse them we do.
+        if merged and s <= merged[-1][1] + 40:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    out, total = [], 0
+    for s, e in merged:
+        chunk = body[s:e].strip()
+        if total + len(chunk) > char_limit:
+            chunk = chunk[: max(0, char_limit - total)]
+        if chunk:
+            out.append(chunk)
+            total += len(chunk)
+        if total >= char_limit:
+            break
+    return " … ".join(out).strip()
+
+
+# --------------------------------------------------------------------------- #
 # Backend 1 -- live Wikipedia: reused from `retrieval.wikipedia.WikipediaRetriever`.
 # Entity-first search, a 429 retry, a shared session -- already polished it is, so duplicate it we do not.
 # (Imported at the top.) Its knobs: top_k, lang, timeout, chars_per_doc, search_limit.
@@ -216,9 +296,10 @@ class WebSearchRetriever:
             if not bodies:
                 try:
                     if self.body_mode == "browser":
-                        bodies = self._fetch_bodies_via_browser([lnk for _t, lnk in items], self.fetch_bodies)
+                        bodies = self._fetch_bodies_via_browser(
+                            [lnk for _t, lnk in items], self.fetch_bodies, question)
                     else:
-                        bodies = self._fetch_bodies_via_ddg(query, self.fetch_bodies)
+                        bodies = self._fetch_bodies_via_ddg(query, self.fetch_bodies, question)
                 except Exception:
                     bodies = []
         docs = bodies + headlines
@@ -290,15 +371,20 @@ class WebSearchRetriever:
         for i, art in enumerate(results[:n]):
             body = re.sub(r"\s+", " ", ((art.get("fields") or {}).get("bodyText") or "")).strip()
             if body:
+                # FULL bodyText we keep, then OPTION-AWARE focus it to the budget -- the attribution
+                # sentence (often mid-article) survives, where a head-truncation would have cut it.
                 docs.append(RetrievedDoc(
-                    doc_id=f"guardian:{i}", text=body[: self.char_limit],
+                    doc_id=f"guardian:{i}", text=_focus_body(body, question, self.char_limit),
                     source="theguardian.com", score=0.0,
                 ))
         return docs
 
-    def _fetch_bodies_via_browser(self, links: list, n: int) -> list[RetrievedDoc]:
+    def _fetch_bodies_via_browser(self, links: list, n: int, question: Question) -> list[RetrievedDoc]:
         """Headless Chromium opens each Google-News link, runs the JS past the consent wall, reads the
-        rendered article. The ONLY body path that works on Colab. [] when Playwright/Chromium absent."""
+        rendered article. The ONLY body path that works on Colab. [] when Playwright/Chromium absent.
+
+        A LOT of raw prose we harvest (`_RAW_BODY_CHARS`), then OPTION-AWARE focus it to the budget --
+        the mid-article attribution survives where the old head-truncation would have cut it."""
         from .browser_fetch import get_browser_fetcher
 
         fetcher = get_browser_fetcher(nav_timeout_s=min(self.timeout_s + 2.0, 8.0))
@@ -308,14 +394,16 @@ class WebSearchRetriever:
                 break
             if not link:
                 continue
-            body = fetcher.fetch(link, max_chars=self.char_limit)
+            body = fetcher.fetch(link, max_chars=_RAW_BODY_CHARS)
             if body:
                 docs.append(RetrievedDoc(
-                    doc_id=f"browser:body:{i}", text=body, source="headless_chromium", score=0.0,
+                    doc_id=f"browser:body:{i}",
+                    text=_focus_body(body, question, self.char_limit),
+                    source="headless_chromium", score=0.0,
                 ))
         return docs
 
-    def _fetch_bodies_via_ddg(self, query: str, n: int) -> list[RetrievedDoc]:
+    def _fetch_bodies_via_ddg(self, query: str, n: int, question: Question) -> list[RetrievedDoc]:
         """DuckDuckGo HTML -> the top-`n` DIRECT publisher URLs -> their article BODIES. [] on any failure.
 
         DDG result links carry the real URL in a `uddg=` redirect param (bbc.co.uk/.., not a Google
@@ -339,11 +427,13 @@ class WebSearchRetriever:
                 break
         docs: list[RetrievedDoc] = []
         for i, u in enumerate(urls):
-            body = self._fetch_article_text(u)
+            # A LOT of raw prose we harvest, then OPTION-AWARE focus it -- mid-article attribution survives.
+            body = self._fetch_article_text(u, max_chars=_RAW_BODY_CHARS)
             if body:
                 host = re.sub(r"^https?://(www\.)?", "", u).split("/")[0]
                 docs.append(RetrievedDoc(
-                    doc_id=f"web:body:{i}", text=body, source=host, score=0.0,
+                    doc_id=f"web:body:{i}",
+                    text=_focus_body(body, question, self.char_limit), source=host, score=0.0,
                 ))
         return docs
 
@@ -538,8 +628,10 @@ class Retriever:
 
     def _web(self) -> WebSearchRetriever:
         if "web" not in self._cache:
-            # Headlines only -> 400 chars plenty. Bodies fetched -> room for the article text we leave (900).
-            web_chars = 900 if self.news_fetch_bodies > 0 else min(self.char_limit, 400)
+            # Headlines only -> 400 chars plenty. Bodies fetched -> a larger per-doc budget we leave
+            # (1200): option-aware focusing keeps the lead + the windows around the answer terms, so the
+            # mid-article attribution sentence fits alongside the setup.
+            web_chars = 1200 if self.news_fetch_bodies > 0 else min(self.char_limit, 400)
             self._cache["web"] = WebSearchRetriever(
                 top_k=self.top_k, char_limit=web_chars, timeout_s=self.timeout_s,
                 fetch_bodies=self.news_fetch_bodies, body_mode=self.news_body_mode,
