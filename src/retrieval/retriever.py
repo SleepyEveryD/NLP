@@ -109,28 +109,48 @@ _RAW_BODY_CHARS = 3500
 # A run of Capitalised words -- a proper name / place an MCQ option carries ("Naveed Sattar", "Red Sea").
 _PROPER_SPAN = re.compile(r"\b[A-Z][a-zA-Z.'’-]+(?:\s+[A-Z][a-zA-Z.'’-]+)*")
 
+# Function words an option may carry -- never worth a body window on their own ("the war", "a group").
+_OPT_STOPWORDS = frozenset(
+    "the a an of to in on and or for with by at as from that this it its their his her "
+    "was were is are be been being had has have will would could should".split()
+)
 
-def _option_terms(question: Question) -> list[str]:
-    """Distinctive lowercase search terms lifted from the MCQ option VALUES -- for option-aware body
-    focusing. Each option's full text, plus its Capitalised proper-name spans -- the name/place the
-    question turns on. Longest-first, so a full name beats a bare surname. Empty for open questions.
+
+def _stem(w: str) -> str:
+    """A crude suffix-strip so an option word matches its article-text variants -- 'glaciers'/'glacial'
+    -> 'glaci', 'volcanic' -> 'volcan', 'melting' -> 'melt'. No linguistic claim; recall, the goal is."""
+    w = w.lower()
+    for suf in ("ation", "ings", "ing", "ers", "er", "ed", "es", "ic", "al", "ly", "s"):
+        if w.endswith(suf) and len(w) - len(suf) >= 4:
+            return w[: -len(suf)]
+    return w
+
+
+def _option_patterns(question: Question) -> list[str]:
+    """Regex alternatives that LOCATE, in an article body, the text an MCQ option refers to. For each
+    option value: its full phrase (verbatim), its Capitalised proper-name spans ("Naveed Sattar"), AND
+    the STEM of each content word -- so "Melting glaciers" finds "glacial"/"glacier thinning", not only
+    the exact phrase. The generic-phrase miss (qid 10630) this fixes.
 
     NB: we use these to SELECT which slice of an ALREADY-RETRIEVED body to keep -- NOT to build the
     search query (query-side option injection was a dead end: it dragged the search off-topic)."""
-    terms: list[str] = []
+    pats: list[str] = []
     for v in (question.options or {}).values():
         v = re.sub(r"\s+", " ", (v or "")).strip()
         if len(v) < 3:
             continue
-        terms.append(v.lower())
-        for m in _PROPER_SPAN.findall(v):
-            if len(m) >= 4 and m.lower() != v.lower():
-                terms.append(m.lower())
+        pats.append(re.escape(v.lower()))                          # the full phrase, verbatim.
+        for m in _PROPER_SPAN.findall(v):                          # proper names / places.
+            if len(m) >= 4:
+                pats.append(re.escape(m.lower()))
+        for w in re.findall(r"[A-Za-z]+", v):                      # content-word stems (prefix match).
+            if len(w) >= 4 and w.lower() not in _OPT_STOPWORDS:
+                pats.append(r"\b" + re.escape(_stem(w)) + r"\w*")
     seen, out = set(), []
-    for t in sorted(terms, key=len, reverse=True):
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
+    for p in pats:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
     return out
 
 
@@ -138,24 +158,21 @@ def _focus_body(body: str, question: Question, char_limit: int,
                 window: int = 260, head_chars: int = 280) -> str:
     """An option-aware slice of an article body, capped at `char_limit`.
 
-    Attribution/detail News questions ("which expert said..", "how many..") hinge on a sentence that
+    Attribution/detail News questions ("which expert said..", "what caused..") hinge on a sentence that
     often sits MID-article -- a plain head-truncation to char_limit drops it. So when the options give
-    us search terms (a name, a place), we KEEP the windows of text around where those terms appear,
-    plus the lead (topic/setup). No option term lands in this article -> head-truncation, the old safe
-    behaviour (no regression for questions whose options aren't verbatim in the text)."""
+    us search terms (a name, a place, a cause), we KEEP the windows of text around where those terms
+    (or their stems) appear, plus the lead (topic/setup). No option term lands in this article ->
+    head-truncation, the old safe behaviour (no regression for options not echoed in the text)."""
     body = re.sub(r"\s+", " ", body or "").strip()
     if len(body) <= char_limit:
         return body
-    low = body.lower()
     spans: list[list[int]] = [[0, head_chars]]   # the lead, always kept (context for the windows).
-    for t in _option_terms(question):
-        start = 0
-        while True:
-            i = low.find(t, start)
-            if i < 0:
-                break
-            spans.append([max(0, i - window), min(len(body), i + len(t) + window)])
-            start = i + len(t)
+    for pat in _option_patterns(question):
+        try:
+            for m in re.finditer(pat, body, re.IGNORECASE):
+                spans.append([max(0, m.start() - window), min(len(body), m.end() + window)])
+        except re.error:
+            continue
     if len(spans) == 1:                 # only the lead -> no option term found -> head truncation.
         return body[:char_limit]
     spans.sort()

@@ -99,6 +99,7 @@ def _build_record(
         prompt_strategy=pred.prompt_strategy,
         retrieval_used=pred.retrieval_used,
         retrieved_doc_ids=pred.retrieved_doc_ids,
+        retrieved_snippets=getattr(pred, "retrieved_snippets", []),
         tool_used=pred.tool_used,
         predicted_answer=pred.answer,
         gold_answer=question.gold,
