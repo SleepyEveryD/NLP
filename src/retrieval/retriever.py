@@ -71,6 +71,29 @@ def _query_from_question(question: Question, max_chars: int = 300) -> str:
     return text[:max_chars]
 
 
+_ISO_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
+
+
+def _gnews_date_window(question: Question, before_days: int = 3, after_days: int = 2) -> str:
+    """A Google-News `after:.. before:..` operator from the question's ISO date, build it we do (else "").
+
+    News questions a date carry ("the article from 2026-05-14"). The text we STRIP it from (free-text it
+    is noise -- it drags the query off-topic); but as a DATE-RANGE operator, re-inject it we do -- the
+    temporally-irrelevant results, it culls (tested: 5 generic hits -> the right window). Google-only this
+    is, so ONLY the gnews query gets it -- the shared `_query_from_question`, untouched it stays."""
+    m = _ISO_DATE.search(question.text or "")
+    if not m:
+        return ""
+    try:
+        from datetime import date, timedelta
+        d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        lo = d - timedelta(days=after_days)
+        hi = d + timedelta(days=before_days)
+        return f" after:{lo.isoformat()} before:{hi.isoformat()}"
+    except Exception:
+        return ""
+
+
 # --------------------------------------------------------------------------- #
 # Backend 1 -- live Wikipedia: reused from `retrieval.wikipedia.WikipediaRetriever`.
 # Entity-first search, a 429 retry, a shared session -- already polished it is, so duplicate it we do not.
@@ -159,8 +182,13 @@ class WebSearchRetriever:
                 return []
         # Default News stack: Google News RSS for HEADLINES -- keyless, raw RSS, reliable on the Colab IP.
         # The post-cutoff answer is OFTEN in the headline itself ("...lists 41 properties.. - BBC").
+        # The question's ISO date, as a `after:.. before:..` window we re-inject (Google-only) -- the
+        # temporally-irrelevant noise it culls. Over-narrowed (0 hits)? -> without the window, retry once.
+        window = _gnews_date_window(question)
         try:
-            items = self._gnews_items(query)        # [(text, link)]
+            items = self._gnews_items(query + window)   # [(text, link)]
+            if not items and window:
+                items = self._gnews_items(query)
         except Exception:
             items = []
         headlines = [
