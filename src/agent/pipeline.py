@@ -119,6 +119,7 @@ class QAPipeline:
         retrieval_used: bool = False
         docs = None
         retrieved_doc_ids: list[str] = []
+        retrieved_snippets: list[str] = []
 
         # Tool state, initialised here -- Phase 3 hook awaits, for now None it is.
         tool_used: str | None = None
@@ -150,6 +151,12 @@ class QAPipeline:
                     # The doc_id of each retrieved chunk, collected for the EvalRecord it is.
                     retrieved_doc_ids = [
                         doc.doc_id for doc in docs if hasattr(doc, "doc_id")
+                    ]
+                    # ...and the TEXT too (source-tagged) -- so a wrong-answer log shows whether the
+                    # evidence carried the answer (retrieval miss) or the model ignored it (grounding miss).
+                    retrieved_snippets = [
+                        f"[{getattr(doc, 'source', '?')}#{getattr(doc, 'doc_id', i)}] {doc.text}"
+                        for i, doc in enumerate(docs) if hasattr(doc, "text")
                     ]
 
             # --- Stage: prompt ---
@@ -210,6 +217,7 @@ class QAPipeline:
                 prompt_strategy=getattr(self.prompt_builder, "strategy", ""),
                 retrieval_used=retrieval_used,
                 retrieved_doc_ids=retrieved_doc_ids,
+                retrieved_snippets=retrieved_snippets,
                 tool_used=tool_used,
                 latency_s=guard.elapsed(),
                 tokens_in=getattr(self.engine, "last_tokens_in", 0),
@@ -228,6 +236,7 @@ class QAPipeline:
             prompt_strategy=getattr(self.prompt_builder, "strategy", ""),
             retrieval_used=retrieval_used,
             retrieved_doc_ids=retrieved_doc_ids,
+            retrieved_snippets=retrieved_snippets,
             tool_used=tool_used,
             latency_s=guard.elapsed(),
             tokens_in=getattr(self.engine, "last_tokens_in", 0),

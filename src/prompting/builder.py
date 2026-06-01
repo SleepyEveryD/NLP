@@ -16,9 +16,17 @@ def _build_context_block(context: list[RetrievedDoc]) -> str:
     Raw text only, injected it is -- never an LLM-generated answer (D-008).
     """
     # Each doc's raw text, on its own numbered line it goes.
-    lines = ["Referenced knowledge:"]
+    lines = ["Referenced knowledge (retrieved sources -- your PRIMARY evidence):"]
     for i, doc in enumerate(context, start=1):
         lines.append(f"[{i}] {doc.text.strip()}")
+    # GROUNDING directive -- the "prior-default" miss this targets (qid 10630: the model picked the
+    # textbook cause "earthquake" over the article's specific one). When the sources state the answer
+    # -- a name, place, cause, number, quote -- ANSWER FROM THEM, not from the most typical/general case.
+    lines.append(
+        "When these sources state the answer (a name, place, cause, number, or quote), base your answer "
+        "on what they say -- NOT on the most common or textbook case. The article's specific detail wins. "
+        "Only if the sources do not address the question, fall back on general knowledge."
+    )
     lines.append("")  # A blank line, separation it provides.
     return "\n".join(lines)
 

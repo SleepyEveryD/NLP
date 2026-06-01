@@ -27,6 +27,29 @@ class RetrievalConfig:
     top_k: int = 3
     embedder: str = "intfloat/multilingual-e5-small"
     index_path: Optional[str] = None
+    # Minimum FAISS cosine similarity to KEEP a corpus doc. 0.0 = off (every top_k doc passes, the
+    # old behaviour). A floor (~0.72 for e5-small) drops off-topic matches -- the second line of
+    # defence after the needs_retrieval gate, for when retrieval fires but the corpus has no real hit
+    # (e.g. a name-collision pulling celebrity pages). Below the floor everything? -> [] and the
+    # routed retriever falls back to live Wikipedia. Web/Wikipedia docs (no real score) are unaffected.
+    min_score: float = 0.0
+    # NEWS only: how many top Google-News-RSS articles to fetch the BODY of (0 = headlines only). The
+    # headline carries the gist, but "who was quoted.." / exact numbers live in the article TEXT (qid
+    # 11415 died with headlines alone). Best-effort + crash-safe: a fetch fail -> that item keeps just
+    # its headline. Each body is ONE extra HTTP with a TIGHT timeout, so the 30s wall it respects.
+    news_fetch_bodies: int = 0
+    # HOW to fetch those bodies: "off" | "ddg" | "browser".
+    #   "ddg"     -- DuckDuckGo gives the DIRECT publisher URL, `requests` fetches it. Fast, but DDG is
+    #                BLOCKED on the Colab IP (returns nothing there) -- so on Colab this yields no bodies.
+    #   "browser" -- a headless Chromium opens the Google-News link, RUNS the JS (past the consent wall +
+    #                redirect) and reads the rendered article. The ONLY path that gets bodies on Colab; it
+    #                needs `playwright install chromium` and is ~3-4s/article. Name "headless Chromium" in the video.
+    news_body_mode: str = "ddg"
+    # The Guardian Open Platform key. When set, the News body comes FIRST from the Guardian Content API
+    # (free, raw `bodyText` in ONE ~0.2s call -- no browser, no consent wall) and only NON-Guardian stories
+    # fall back to `news_body_mode`. A SECRET it is -- NEVER in this YAML; the notebook injects it from a
+    # Colab secret. Empty -> the Guardian path simply skipped. Name "Guardian Open Platform API" in the video.
+    guardian_api_key: str = ""
 
 
 @dataclass

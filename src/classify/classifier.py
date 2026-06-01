@@ -267,6 +267,16 @@ _RETRIEVAL_FACTUAL_RE = re.compile(
     r"|where\s+(?:was|did|is|are)"
     r"|which\s+year\b"
     r"|what\s+year\b"
+    # Factual-recall heads -- a NAMED answer they demand (history/politics especially), where the
+    # corpus helps and the bare 7B drifts. "which emperor's reign saw.." (qid 1245) fired NOTHING
+    # before -- no proper noun, no cue -- and the model guessed wrong; now caught these are.
+    r"|wh(?:ich|at)\s+(?:emperor|empress|king|queen|pharaoh|monarch|ruler|dynasty|empire|"
+    r"kingdom|civili[sz]ation|president|chancellor|general|pope|saint|treaty|battle|war|"
+    r"revolution|tribe|nation)"
+    r"|whose\s+reign\b"
+    r"|reign\s+(?:of|saw)\b"
+    r"|credited\s+with\b"
+    r"|attributed\s+to\b"
     r"|capital\s+of\b"
     r"|author\s+of\b"
     r"|inventor\s+of\b"
@@ -295,6 +305,19 @@ _RETRIEVAL_NEWS_RE = re.compile(
 _HIGH_RETRIEVAL_TOPICS: frozenset[str] = frozenset({
     "News",
     "Ancient History and Politics",
+})
+
+# Capitalised words that are NOT named entities -- sentence openers, pronouns, articles, question
+# words. The named-entity proxy must IGNORE these, else a word problem ("Jake.. He.. Which..", qid
+# 6055) trips the >=3 gate and the retriever pulls celebrity pages ('Jake Sully', 'Jake Gyllenhaal').
+_RETRIEVAL_NON_ENTITY_WORDS: frozenset[str] = frozenset({
+    "the", "a", "an", "this", "that", "these", "those",
+    "it", "its", "he", "she", "him", "his", "her", "they", "them", "their",
+    "we", "us", "our", "you", "your", "i", "my", "me",
+    "which", "what", "when", "where", "who", "whom", "whose", "why", "how",
+    "is", "are", "was", "were", "do", "does", "did", "has", "have", "had",
+    "if", "then", "both", "each", "also", "according", "many", "some", "all",
+    "in", "on", "at", "to", "of", "and", "or", "but", "for", "from", "with",
 })
 
 
@@ -393,15 +416,26 @@ class QuestionClassifier:
         if _RETRIEVAL_FACTUAL_RE.search(question.text):
             return True
 
-        # Named-entity density proxy: many capitalised words (>= 3) hint at factual content.
-        # Title-cased tokens (not start of sentence), count we do.
-        tokens = question.text.split()
-        # Skip the very first token -- sentence start, capitalised it always is.
-        capitalised = [
-            t for t in tokens[1:]
-            if t and t[0].isupper() and t.isalpha()
-        ]
-        if len(capitalised) >= 3:
+        # Named-entity density proxy: >= 3 DISTINCT proper nouns hint at factual content the corpus
+        # can supply. The old "any capitalised token >= 3" version FALSE-FIRED on word problems --
+        # it counted sentence openers ("He", "Which") and a repeated first name ("Jake") as entities
+        # (qid 6055), so the retriever injected three actor pages and the model answered wrong. Now we
+        # count only NON-sentence-initial, NON-function-word, DISTINCT capitalised alphabetic tokens.
+        entities: set[str] = set()
+        sentence_start = True  # The first token of the text opens a sentence, it does.
+        for tok in question.text.split():
+            opens_sentence = sentence_start
+            # The NEXT token opens a sentence iff THIS token ends one (. ? !), decide we now do.
+            sentence_start = tok.endswith((".", "?", "!", ":", ";"))
+            word = tok.strip(".,;:!?\"'`()[]{}")
+            if not word or not word[0].isupper() or not word.isalpha():
+                continue
+            if opens_sentence:                       # Capitalised only because it opens a sentence.
+                continue
+            if word.lower() in _RETRIEVAL_NON_ENTITY_WORDS:  # Pronoun / article / question word.
+                continue
+            entities.add(word)
+        if len(entities) >= 3:
             return True
 
         # No retrieval signal found; skip retrieval, we can.

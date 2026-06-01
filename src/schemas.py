@@ -102,6 +102,10 @@ class Prediction:
     prompt_strategy: str = ""
     retrieval_used: bool = False
     retrieved_doc_ids: list[str] = field(default_factory=list)
+    # The retrieved chunks' TEXT (not just ids) -- so a wrong answer's log shows whether the evidence
+    # actually carried the answer (a retrieval miss) or the model ignored it (a grounding miss). News
+    # diagnosis needs this; the doc_ids alone (`guardian:0`..) reveal nothing about the content.
+    retrieved_snippets: list[str] = field(default_factory=list)
     tool_used: Optional[str] = None    # e.g. "calculator"; None if no tool called, it is.
     latency_s: float = 0.0
     tokens_in: int = 0
@@ -144,6 +148,9 @@ class EvalRecord:
     # None for offline rows / old logs / when the server withholds it, these stay.
     reached_level: Optional[int] = None    # How high the RUN climbed -- across the game, its max the score is.
     current_level: Optional[int] = None    # The level of THIS turn, as the server counted it.
+    # The retrieved chunks' TEXT (source-tagged) -- empty for old logs / no-retrieval rows. The "was the
+    # answer even in the evidence?" question, this answers when a News turn goes wrong.
+    retrieved_snippets: list[str] = field(default_factory=list)
 
     @staticmethod
     def now() -> float:
