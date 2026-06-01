@@ -196,6 +196,68 @@ def _focus_body(body: str, question: Question, char_limit: int,
 
 
 # --------------------------------------------------------------------------- #
+# Guardian relevance gate -- "is this body actually about the question?"
+# --------------------------------------------------------------------------- #
+# Generic / question-scaffold words that carry NO topic signal -- excluded from the keyword test, so a
+# stray "potentially" or "America" in an off-topic article cannot fake relevance. The DISTINCTIVE nouns
+# (measles, resurgence, a proper name) are what must land for a body to count as on-topic.
+_Q_STOPWORDS = frozenset((
+    "the a an of to in on and or for with by at as from that this it its their his her was were is are be "
+    "been being had has have will would could should which what who whom whose where when why how than "
+    "according article articles report reported reports published said say says mention mentioned noted "
+    "note stated state describe described decided decide launch launched potentially particularly "
+    "especially recently currently generally about into them they you your our we us not no yes also more "
+    "most some any such event events people person government country countries world year years day days "
+    "time news north south east west america american europe european asia asian africa african region "
+    "regarding consequence following between against during while because"
+).split())
+
+
+def _question_keywords(question: Question) -> list[str]:
+    """The DISTINCTIVE topic terms of a question -- its proper names + its longer content words (>=6),
+    minus the generic scaffolding. The handful that an on-topic article MUST mention."""
+    text = question.text or ""
+    kws: list[str] = []
+    for part in _PROPER_SPAN.findall(text):          # proper names: the strongest topic signal.
+        for w in part.split():
+            wl = w.lower()
+            if len(wl) >= 4 and wl not in _Q_STOPWORDS:
+                kws.append(wl)
+    for w in re.findall(r"[A-Za-z]+", text):          # long content words.
+        wl = w.lower()
+        if len(wl) >= 6 and wl not in _Q_STOPWORDS:
+            kws.append(wl)
+    seen, out = set(), []
+    for k in kws:
+        if k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+def _relevance(text: str, keywords: list[str]) -> float:
+    """Fraction of the question's distinctive keywords whose stem appears in `text`. 1.0 when there are
+    no keywords to test (then we don't second-guess the search)."""
+    if not keywords:
+        return 1.0
+    low = (text or "").lower()
+    hits = 0
+    for k in keywords:
+        try:
+            if re.search(r"\b" + re.escape(_stem(k)) + r"\w*", low):
+                hits += 1
+        except re.error:
+            continue
+    return hits / len(keywords)
+
+
+# The Guardian-keep bar: a body must share at least this fraction of the question's distinctive keywords,
+# else we judge it OFF-TOPIC and fall through to the broad web path (gnews links via browser/ddg). Modest
+# (a third) so a genuinely on-topic Guardian article -- today's 9/10 -- is never abandoned.
+_GUARDIAN_RELEVANCE_MIN = 0.34
+
+
+# --------------------------------------------------------------------------- #
 # Backend 1 -- live Wikipedia: reused from `retrieval.wikipedia.WikipediaRetriever`.
 # Entity-first search, a 429 retry, a shared session -- already polished it is, so duplicate it we do not.
 # (Imported at the top.) Its knobs: top_k, lang, timeout, chars_per_doc, search_limit.
@@ -307,10 +369,21 @@ class WebSearchRetriever:
         bodies: list[RetrievedDoc] = []
         if self.fetch_bodies > 0 and self.body_mode != "off":
             try:
-                bodies = self._guardian_bodies(query, question, self.fetch_bodies)
+                guardian = self._guardian_bodies(query, question, self.fetch_bodies)
             except Exception:
-                bodies = []
-            if not bodies:
+                guardian = []
+            # RELEVANCE GATE: Guardian is tried first (fast), but only KEPT when a body actually matches
+            # the question. Off-topic Guardian hits (the answer article isn't the Guardian's) used to be
+            # returned anyway, burying the one on-topic gnews link -- the measles/World-Cup miss (qid
+            # 11067). Now an off-topic (or empty) Guardian result falls THROUGH to the broad web path,
+            # which opens the gnews top links (any publisher) via browser/ddg.
+            keywords = _question_keywords(question)
+            guardian_ok = bool(guardian) and any(
+                _relevance(d.text, keywords) >= _GUARDIAN_RELEVANCE_MIN for d in guardian
+            )
+            if guardian_ok:
+                bodies = guardian
+            else:
                 try:
                     if self.body_mode == "browser":
                         bodies = self._fetch_bodies_via_browser(
@@ -319,6 +392,10 @@ class WebSearchRetriever:
                         bodies = self._fetch_bodies_via_ddg(query, self.fetch_bodies, question)
                 except Exception:
                     bodies = []
+                # The broad path came back empty (browser blocked, no direct URL) -- then whatever
+                # Guardian gave is better than nothing (crash-safe: never regress to zero bodies).
+                if not bodies and guardian:
+                    bodies = guardian
         docs = bodies + headlines
         if docs:
             return docs
