@@ -302,20 +302,17 @@ _RETRIEVAL_NEWS_RE = re.compile(
 )
 
 # Topics that almost always benefit from retrieval, these do.
-# Entertainment added (2026-06): a live 49-question stress test showed `needs_retrieval` fired on only
-# 29% of Entertainment questions, yet retrieval-fired questions scored 93% vs 77% for the rest -- and 8 of
-# 9 deaths were NON-retrieved trap questions the 7B's pop-culture prior got wrong ("The Shawshank
-# Redemption" was filmed in OHIO not its Maine setting; Whitney Houston's DEBUT album; the festival
-# Scorsese's debut premiered at). The cue-based gate UNDER-fires on Entertainment phrasing ("which film
-# was X known for", "what was X's debut album", "primary reason") because those carry <3 proper nouns and
-# none of the who/when/where factual cues. Entertainment is a knowledge/recall race Wikipedia covers very
-# well, so -- like News and Ancient History -- it should retrieve almost always. Live stamps the topic
-# exactly "Entertainment" (comp 0), and the retriever routes it to FAISS/Wikipedia (not web -- `_looks_like_news`
-# needs "news" in the topic). Latency stays safe (retrieved Entertainment turns ran ~6-7s, budget 25s).
+# Entertainment was briefly forced here (retrieve EVERY question) -- REVERTED 2026-06. The motivation was
+# real: the `needs_retrieval` cue gate fires on only ~29% of Entertainment questions, retrieval-fired turns
+# scored 93% vs 77%, and trap questions ("The Shawshank Redemption" filmed in OHIO, not its Maine setting)
+# genuinely need the corpus. BUT forcing retrieval on 100% of turns HAMMERED the live Wikipedia API and
+# ~40% of turns then died to HTTP 429 (empty retrieval) on Colab's SHARED egress IP -- net worse, and the
+# ~3% the boost bought is not worth re-introducing the rate-limiting on a category already MAXED at level
+# 15. So Entertainment is back on the ON-DEMAND gate like the other knowledge races: it retrieves when the
+# question looks factual (cues / proper-noun density in `needs_retrieval`) and otherwise trusts the prior.
 _HIGH_RETRIEVAL_TOPICS: frozenset[str] = frozenset({
     "News",
     "Ancient History and Politics",
-    "Entertainment",
 })
 
 # Capitalised words that are NOT named entities -- sentence openers, pronouns, articles, question
