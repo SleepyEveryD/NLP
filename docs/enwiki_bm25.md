@@ -89,6 +89,14 @@ Philosophy), tries in order and stops at the first hit:
 So live Wikipedia fires on **<5 %** of questions → the 429s disappear. **News is unchanged** — it keeps its
 own live-web path (Google News RSS + Guardian + headless Chromium); BM25 is knowledge-only.
 
+**Relevance gate (so absent topics still fall back).** BM25 always returns *some* best match — even for a
+question whose article is NOT in the dump (a post-cutoff / niche topic). `BM25Retriever` therefore keeps a
+hit only when the article **title** shares a distinctive question term (a proper noun, a quoted-title word,
+or a long content word); otherwise it returns `[]` and the question drops to live. The title (not the body)
+is the signal: a long biography name-drops "France"/"Alexander" in its text, but its *title* says what it
+is *about*. Validated: in-corpus questions (Shawshank → Ohio, Oppenheimer, Italian neorealism) stay local;
+absent ones (capital of France, Alexander's teacher, photosynthesis) fall through to live.
+
 Every backend returns `[]` on a miss/failure and the next tier catches it, so a missing or half-built
 index (or a missing `bm25s` dependency) never sinks a live turn — it just falls back to live.
 

@@ -29,7 +29,11 @@ retrieval:
   top_k: 3
   embedder: "intfloat/multilingual-e5-small"  # the FAISS path's encoder (e5; query/passage prefixes baked in).
   index_path: "data/corpus/simplewiki"        # build it: python -m retrieval.build_index (null -> Wikipedia fallback).
-  bm25_index_path: null                        # LOCAL full-enwiki BM25 (docs/enwiki_bm25.md). When set, knowledge
+  bm25_index_path: "data/corpus/enwiki/bm25_index"  # LOCAL full-enwiki BM25 (docs/enwiki_bm25.md). Build it with
+                                               # notebooks/06_build_enwiki_bm25.ipynb (or scripts/build_enwiki_bm25.sh).
+                                               # Index ABSENT? -> graceful fallback to live Wikipedia, so this is safe to
+                                               # set before the build exists. Set to null to force the old live-only path.
+                                               # LOCAL full-enwiki BM25 (docs/enwiki_bm25.md). When set, knowledge
                                                # questions hit it FIRST (offline, no 429) and fall back to live
                                                # Wikipedia only on a miss. null -> off, the old path stands. Build
                                                # once: prepare_enwiki -> bm25_index, then point this at the dir.
