@@ -248,6 +248,65 @@ def _cot_maths_v1(question: Question, context: list[RetrievedDoc] | None) -> str
     return "\n".join(parts)
 
 
+# Entertainment-domain exemplars -- film / music / TV, the three biggest subdomains they cover.
+# From OUTSIDE the dev set drawn they are (the dev set holds Pulp Fiction, Dark Side of the Moon, the
+# Hunger Games, the iPhone -- none reused here, leakage we avoid). Their job is TWOFOLD: anchor the
+# 'Answer: X' format AND prime the pop-culture register (a director, an album's artist, a show's setting)
+# so the small model retrieves the RIGHT kind of fact, not a generic plausible-sounding one.
+_ENTERTAINMENT_EXAMPLES = [
+    ("Who directed the 1975 film 'Jaws'?",
+     {"A": "George Lucas", "B": "Steven Spielberg",
+      "C": "Francis Ford Coppola", "D": "Ridley Scott"}, "B"),
+    ("Which artist recorded the 1982 album 'Thriller'?",
+     {"A": "Prince", "B": "Stevie Wonder",
+      "C": "Michael Jackson", "D": "Lionel Richie"}, "C"),
+    ("In the US sitcom 'The Office', what is the name of the paper company?",
+     {"A": "Dunder Mifflin", "B": "Sabre",
+      "C": "Wernham Hogg", "D": "Initech"}, "A"),
+]
+
+
+def _few_shot_entertainment(question: Question, context: list[RetrievedDoc] | None) -> str:
+    """Few-shot tuned for the Entertainment race -- pop-culture recall, this serves (comp 0).
+
+    Entertainment is single-fact recall across film, music, TV, books, video games and sport -- the very
+    shape where explicit chain-of-thought HURTS (the small model invents justification and drifts off a
+    name it already knew). So NO reasoning is asked for: domain exemplars prime the register, the
+    retrieved Wikipedia/FAISS evidence (when the gate fired) grounds the harder later-level facts, and a
+    single committed letter is all we demand. Identical to `few_shot_v1` in shape, but its three generic
+    exemplars (capital-of, photosynthesis, 6x7) are swapped for film/music/TV ones AND a domain-aware
+    instruction is added -- so the prime matches the questions actually asked.
+
+    For open questions, a short free-text answer it keeps (the race is MCQ in practice).
+    """
+    parts: list[str] = []
+
+    # Context block, only when evidence exists, prepend we do (entertainment facts Wikipedia covers well).
+    if context:
+        parts.append(_build_context_block(context))
+
+    # The entertainment exemplars, first they come -- 'Answer: X' each one ends with.
+    for ex_text, ex_opts, ex_gold in _ENTERTAINMENT_EXAMPLES:
+        parts.append(_render_mcq(ex_text, ex_opts))
+        parts.append(f"Answer: {ex_gold}")
+        parts.append("")  # A blank line between examples, separation it gives.
+
+    # The real question, last it stands.
+    if question.qtype == QuestionType.OPEN or not question.options:
+        parts.append(f"Question: {question.text.strip()}")
+        parts.append("Answer briefly -- the name, title, or fact only.")
+    else:
+        parts.append(_render_mcq(question.text, question.options))
+        parts.append(
+            "This is an Entertainment trivia question (film, music, TV, books, video games, or sport). "
+            "Identify the specific work, person, year, or fact asked for. If reference sources are given "
+            "above, base the answer on them; otherwise use well-known facts. Answer with ONLY the letter "
+            "(A, B, C, or D) -- no explanation, the letter alone."
+        )
+
+    return "\n".join(parts)
+
+
 # ===========================================================================
 # Adaptive-routing research strategies -- the four experimental conditions, these are.
 #
@@ -446,6 +505,7 @@ _REGISTRY: dict[str, object] = {
     "cot_v1": _cot_v1,
     "cot_v2": _cot_v2,
     "cot_maths_v1": _cot_maths_v1,
+    "few_shot_entertainment": _few_shot_entertainment,
     # Adaptive-routing research conditions (src/experiments/adaptive_routing.py).
     "direct_answer": _direct_answer,
     "generic_cot": _generic_cot,
