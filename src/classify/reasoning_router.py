@@ -98,6 +98,26 @@ _STATEMENT_TF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "Formula math" signals -- abstract algebra (factor/quotient groups) and inferential statistics (normal
+# distribution, z-scores, confidence intervals, standard deviation, variance). These are COMPUTED from a
+# formula, NOT list-and-counted -- yet a single word in them ('factor group', 'how many ... between X and
+# Y') trips the enumeration cue, and the enumerate-every-case scaffold then drives the small model into
+# long LaTeX that overruns the 300-token cap. Every such turn was a WINNABLE question lost to truncation
+# (live qids 6767 factor-group, 6954 normal-dist, 6830 / 7004 stats -- each one step from the answer when
+# the cap cut it off). Routed to cot_v2 instead they stay terse and FINISH (cot_v2 reliably suppresses
+# LaTeX -- every stats chain it produced stayed plain text). NARROW on purpose: bare 'factor' is NOT here
+# (so 'how many factors of 360' stays enumeration) and ring/field notation (Z_n) is NOT here (so the
+# find-all-zeros questions are untouched) -- only the two vocabularies that demonstrably LaTeX-truncate.
+_FORMULA_MATH_RE = re.compile(
+    r"\b(?:factor|quotient)\s+group"
+    r"|normal(?:ly)?\s+distribut"
+    r"|\bz-?scores?\b"
+    r"|confidence\s+(?:interval|level)"
+    r"|standard\s+deviation"
+    r"|\bvariance\b",
+    re.IGNORECASE,
+)
+
 # Discrete-enumeration vocabulary -- combinatorics and "how many <countable>" without a clock.
 _ENUMERATION_RE = re.compile(
     r"\bhow\s+many\s+ways\b"
@@ -236,6 +256,18 @@ class ReasoningClassifier:
             return ReasoningSignal(
                 ReasoningCategory.LOGICAL_REASONING,
                 "paired True/False statements (Statement 1 | ... Statement 2 |)",
+            )
+
+        # 0b. FORMULA MATH -- abstract algebra (factor/quotient groups) and inferential stats. These are
+        #     COMPUTED from a formula, not enumerated; but their vocabulary trips the enumeration cue and
+        #     the enumerate-and-count scaffold then runs long LaTeX past the 300-token cap -- a guaranteed
+        #     loss (live 6767/6954/6830/7004). Classify as ARITHMETIC -> cot_v2 (terse, no LaTeX, finishes).
+        #     NARROW: genuine combinatorics ('how many ways', divisors) and clock counting carry none of
+        #     these signals, so they still reach structured enumeration below.
+        if _FORMULA_MATH_RE.search(text):
+            return ReasoningSignal(
+                ReasoningCategory.ARITHMETIC,
+                "formula-math (factor/quotient group or inferential stats) -- compute, do not enumerate",
             )
 
         # 1. INTERVAL_COUNTING -- counting over a CLOCK/time range (the chime question's exact shape).
