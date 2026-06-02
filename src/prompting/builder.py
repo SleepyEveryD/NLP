@@ -157,6 +157,11 @@ def _cot_v2(question: Question, context: list[RetrievedDoc] | None) -> str:
         wall, so MORE tokens would only time out. The cure is FEWER tokens to the answer: cap the
         steps, BAN LaTeX (the token hog -- \\frac/\\mu/$...$ tripled the length), and DEMAND the
         'Answer:' line always be reached.
+      * the VALUE-MISMATCH slips (live Maths run): qid 6861 computed 14 occurrences then answered
+        '5'; qid 6926 set up 52*39*26/6 (=8788) then answered '2197'; qid 6944 found P(5)=1/9 and
+        P(6)=2/9 but answered before multiplying. In each the 'Answer:' letter did NOT equal the
+        model's OWN final number -- a careless final-step disconnect, not a reasoning gap. So: write
+        the final value, choose the option EQUAL to it, and if none matches, RECOMPUTE (never guess).
     For open questions, identical to cot_v1 it stays (no options).
     """
     parts: list[str] = []
@@ -174,7 +179,10 @@ def _cot_v2(question: Question, context: list[RetrievedDoc] | None) -> str:
             "Solve in AT MOST 3 very short steps. Plain numbers ONLY -- NO LaTeX, no \\frac, "
             "no \\mu/\\sigma, no $...$; write 'mu'/'sigma' as words and keep each step under ~12 "
             "words. When two options share the same conclusion, pick the one whose numbers (values, "
-            "signs, degrees of freedom) match your result EXACTLY -- not just the conclusion. You "
+            "signs, degrees of freedom) match your result EXACTLY -- not just the conclusion. "
+            "Before the Answer line, write your FINAL computed value, then choose the option EQUAL "
+            "to it; if NO option equals your value you made a slip -- recheck (a dropped sign, an "
+            "off-by-one, an unfinished step) and recompute, do NOT guess. You "
             "MUST end on a new line with 'Answer: X' (X = A, B, C, or D) -- always reach that line."
         )
 
@@ -355,6 +363,8 @@ def _structured_enumeration_cot(question: Question, context: list[RetrievedDoc] 
             "2. Boundary check: state the first and last item that qualify, and confirm each endpoint "
             "is inside the asked range (watch the off-by-one).\n"
             "3. ONLY NOW add them up -- show the running total.\n"
+            "4. Write your FINAL value, then choose the option EQUAL to it; if NO option equals it you "
+            "made a slip -- recheck (off-by-one? a missed case?) and recompute, do NOT guess.\n"
             "You MUST end on a new line with 'Answer: X' (X = A, B, C, or D) -- ALWAYS reach that line."
         )
 
