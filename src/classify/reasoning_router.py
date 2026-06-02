@@ -76,10 +76,25 @@ _COUNT_RE = re.compile(
 )
 
 # A range / interval phrasing -- "between X and Y", "from X to Y", "every N minutes".
+# The "every N <unit>" branch accepts a SPELLED-OUT number too (every TWO seconds), not only digits:
+# the cyclic-coincidence counting questions ("red blinks every two seconds ... how many times do all
+# coincide") write the period in words, so the digit-only pattern missed them and they fell through to
+# commonsense -> cot_v2, which botched the inclusive off-by-one (live qid 6861, a recurring death).
 _RANGE_RE = re.compile(
     r"\bbetween\b[\s\S]*?\band\b"
     r"|\bfrom\b[\s\S]*?\bto\b"
-    r"|\bevery\s+\d+\s*-?\s*(?:minute|hour|second|day)",
+    r"|\bevery\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"\s*-?\s*(?:minute|hour|second|day)",
+    re.IGNORECASE,
+)
+
+# The GRE-style PAIRED True/False format ("Statement 1 | ... Statement 2 | ..."). These are CONCEPT
+# judgements -- often abstract algebra ('subset', 'factor group') -- NOT combinatorics; but those very
+# words trip the enumeration cue below, and the enumerate-then-count scaffold produces GARBAGE on a
+# True/False judgement (live qid 6768 wrote "Running total: 1"). Detected at TOP precedence and sent to
+# logical reasoning (-> cot_v2 under the live Maths policy). Both halves required -> never a false hit.
+_STATEMENT_TF_RE = re.compile(
+    r"\bstatement\s+1\b[\s\S]*\bstatement\s+2\b",
     re.IGNORECASE,
 )
 
@@ -212,6 +227,16 @@ class ReasoningClassifier:
         has_time_word = bool(_TIME_WORD_RE.search(text))
         has_count = bool(_COUNT_RE.search(text))
         has_range = bool(_RANGE_RE.search(text))
+
+        # 0. STATEMENT-PAIR True/False -- the GRE "Statement 1 | ... Statement 2 |" concept format.
+        #    HIGHEST precedence on purpose: 'subset' / 'factor (group)' / 'distinct' inside these would
+        #    otherwise hijack the enumeration cue, and the enumerate-and-count scaffold produces nonsense
+        #    on a True/False judgement. A clean two-statement validity check (-> cot_v2) is the right shape.
+        if _STATEMENT_TF_RE.search(text):
+            return ReasoningSignal(
+                ReasoningCategory.LOGICAL_REASONING,
+                "paired True/False statements (Statement 1 | ... Statement 2 |)",
+            )
 
         # 1. INTERVAL_COUNTING -- counting over a CLOCK/time range (the chime question's exact shape).
         #    A count intent AND a clock/time signal AND a range, all three together it needs.
