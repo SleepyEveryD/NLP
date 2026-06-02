@@ -302,6 +302,14 @@ _RETRIEVAL_NEWS_RE = re.compile(
 )
 
 # Topics that almost always benefit from retrieval, these do.
+# Entertainment was briefly forced here (retrieve EVERY question) -- REVERTED 2026-06. The motivation was
+# real: the `needs_retrieval` cue gate fires on only ~29% of Entertainment questions, retrieval-fired turns
+# scored 93% vs 77%, and trap questions ("The Shawshank Redemption" filmed in OHIO, not its Maine setting)
+# genuinely need the corpus. BUT forcing retrieval on 100% of turns HAMMERED the live Wikipedia API and
+# ~40% of turns then died to HTTP 429 (empty retrieval) on Colab's SHARED egress IP -- net worse, and the
+# ~3% the boost bought is not worth re-introducing the rate-limiting on a category already MAXED at level
+# 15. So Entertainment is back on the ON-DEMAND gate like the other knowledge races: it retrieves when the
+# question looks factual (cues / proper-noun density in `needs_retrieval`) and otherwise trusts the prior.
 _HIGH_RETRIEVAL_TOPICS: frozenset[str] = frozenset({
     "News",
     "Ancient History and Politics",

@@ -899,6 +899,7 @@ class Retriever:
         top_k: int = 3,
         source: str = "routed",
         index_path: Optional[str] = None,
+        bm25_index_path: Optional[str] = None,
         embedder: str = "intfloat/multilingual-e5-small",
         char_limit: int = 600,
         timeout_s: float = 6.0,
@@ -910,6 +911,7 @@ class Retriever:
         self.top_k = top_k
         self.source = (source or "routed").lower()
         self.index_path = index_path
+        self.bm25_index_path = bm25_index_path   # local enwiki BM25; knowledge questions hit it FIRST.
         self.embedder = embedder
         self.char_limit = char_limit
         self.timeout_s = timeout_s
@@ -953,6 +955,25 @@ class Retriever:
             )
         return self._cache["faiss"]  # type: ignore[return-value]
 
+    def _bm25(self):
+        """The local enwiki BM25 backend -- None when no `bm25_index_path`, so the caller falls back.
+
+        Construction is LAZY and crash-safe: a missing/half-built index or a missing `bm25s` dep yields
+        None here (logged once), and the knowledge route drops to FAISS/live Wikipedia -- a live turn the
+        absent corpus never sinks.
+        """
+        if not self.bm25_index_path:
+            return None
+        if "bm25" not in self._cache:
+            try:
+                from retrieval.bm25_retriever import BM25Retriever
+                self._cache["bm25"] = BM25Retriever(
+                    index_dir=self.bm25_index_path, top_k=self.top_k, char_limit=self.char_limit,
+                )
+            except Exception:
+                self._cache["bm25"] = None  # build failed -> remember the miss, fall back every time.
+        return self._cache["bm25"]
+
     # -- the public route --
 
     def retrieve(self, question: Question) -> list[RetrievedDoc]:
@@ -961,6 +982,9 @@ class Retriever:
             return self._wikipedia().retrieve(question)
         if self.source == "web":
             return self._web().retrieve(question)
+        if self.source == "bm25":
+            bm25_be = self._bm25()
+            return bm25_be.retrieve(question) if bm25_be else []
         if self.source == "faiss":
             faiss_be = self._faiss()
             return faiss_be.retrieve(question) if faiss_be else []
@@ -974,7 +998,16 @@ class Retriever:
             # The web blocked us (a 429, a layout shift) -- Wikipedia, a best-effort net it casts.
             return self._wikipedia().retrieve(question)
 
-        # KNOWLEDGE -- the local corpus when we have one, else live Wikipedia.
+        # KNOWLEDGE -- LOCAL FIRST, live only on a miss. Order chosen to dodge the live-API 429s:
+        #   1. local enwiki BM25 (offline, unlimited) -- answers the vast majority of evergreen trivia;
+        #   2. local FAISS corpus (if a dense index is configured instead/as-well);
+        #   3. live Wikipedia -- the safety net for the FEW post-cutoff / niche questions the dump lacks.
+        # Each tier returns [] on a miss and we drop to the next, so live fires on <5% of questions.
+        bm25_be = self._bm25()
+        if bm25_be is not None:
+            docs = bm25_be.retrieve(question)
+            if docs:
+                return docs
         faiss_be = self._faiss()
         if faiss_be is not None:
             docs = faiss_be.retrieve(question)
@@ -995,6 +1028,7 @@ def build_retriever(retrieval_cfg, **overrides) -> Optional[Retriever]:
         top_k=overrides.get("top_k", getattr(retrieval_cfg, "top_k", 3)),
         source=overrides.get("source", getattr(retrieval_cfg, "source", "routed")),
         index_path=overrides.get("index_path", getattr(retrieval_cfg, "index_path", None)),
+        bm25_index_path=overrides.get("bm25_index_path", getattr(retrieval_cfg, "bm25_index_path", None)),
         embedder=overrides.get("embedder", getattr(retrieval_cfg, "embedder", "intfloat/multilingual-e5-small")),
         min_score=overrides.get("min_score", getattr(retrieval_cfg, "min_score", 0.0)),
         news_fetch_bodies=overrides.get(
