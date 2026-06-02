@@ -13,6 +13,8 @@ not claimed). See [[maths-live-routing-stack]].
 from __future__ import annotations
 
 import ast
+import datetime
+import itertools
 import math
 import re
 from fractions import Fraction
@@ -331,14 +333,170 @@ def _solve_arith_expression(q: Question) -> tuple[str, str] | None:
     return None
 
 
+def _solve_common_divisor_count(q: Question) -> tuple[str, str] | None:
+    """'How many positive integers are factors of A and (also) factors of B' -> d(gcd(A,B))."""
+    t = q.text
+    if not (re.search(r"how many", t, re.I) and re.search(r"\b(?:factors?|divisors?)\b", t, re.I)):
+        return None
+    nums = None
+    for pat in (
+        r"common\s+(?:factors?|divisors?)\s+of\s+(\d+)\s+and\s+(\d+)",
+        r"(?:factors?|divisors?)\s+of\s+(\d+)\b[\s\S]*?(?:factors?|divisors?)\s+of\s+(\d+)",
+        r"(?:factors?|divisors?)\s+of\s+(\d+)\s+and\s+(?:also\s+)?(?:of\s+)?(\d+)",
+    ):
+        m = re.search(pat, t, re.I)
+        if m:
+            nums = (int(m.group(1)), int(m.group(2)))
+            break
+    if not nums:
+        return None
+    g = math.gcd(*nums)
+    cnt = sum(1 for k in range(1, g + 1) if g % k == 0)
+    letter = _match_value(q.options, Fraction(cnt))
+    if letter:
+        return letter, f"common divisors of {nums} = d(gcd={g}) = {cnt}"
+    return None
+
+
+def _solve_subspace_intersection_dim(q: Question) -> tuple[str, str] | None:
+    """'a-dim V, b-dim W in n-dim X; which (cannot) be dim(V∩W)' -> range [max(0,a+b-n), min(a,b)]."""
+    t = q.text
+    if not (re.search(r"subspace", t, re.I) and re.search(r"inters|∩", t, re.I)):
+        return None
+    dims = [int(x) for x in re.findall(r"(\d+)\s*-?\s*dimensional", t, re.I)]
+    if len(dims) < 2:
+        return None
+    n = max(dims)
+    others = [d for d in dims if d < n]
+    if not others:
+        return None
+    a = others[0]
+    b = others[1] if len(others) > 1 else others[0]
+    if a > n or b > n:
+        return None
+    lo, hi = max(0, a + b - n), min(a, b)
+    valid = set(range(lo, hi + 1))
+    opts = {}
+    for k, v in q.options.items():
+        m = re.fullmatch(r"\s*(\d+)\s*", v)
+        if not m:
+            return None
+        opts[k] = int(m.group(1))
+    negated = bool(re.search(r"\bcannot\b|\bnot\b|impossible", t, re.I))
+    if negated:
+        cands = [k for k, val in opts.items() if val not in valid]
+    else:
+        cands = [k for k, val in opts.items() if val in valid]
+    if len(cands) == 1:
+        side = "outside" if negated else "inside"
+        return cands[0], f"dim(V∩W) in [{lo},{hi}] (dims {a},{b} in {n}); {side} -> {cands[0]}"
+    return None
+
+
+_MONTHS = {m.lower(): i for i, m in enumerate(
+    ["January", "February", "March", "April", "May", "June", "July",
+     "August", "September", "October", "November", "December"], 1)}
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _solve_operator_placement(q: Question) -> tuple[str, str] | None:
+    """'Place +, ×, − (each once) in N _ N _ N _ N to get the highest/lowest' -> enumerate placements."""
+    t = q.text
+    if not (re.search(r"(?:put|place|insert)\b[\s\S]{0,40}symbols?|each symbol", t, re.I)
+            and re.search(r"\b(highest|largest|greatest|maximum|lowest|smallest|least|minimum)\b", t, re.I)):
+        return None
+    ops = [o for w, o in (("plus", "+"), ("times", "*"), ("minus", "-"), ("divided", "/"))
+           if re.search(r"\b" + w, t, re.I)]
+    if len(ops) < 2:
+        return None
+    region = t
+    m = re.search(r"\\\[(.+?)\\\]", t, re.S)        # the \[...\] display block, if present.
+    if m:
+        region = m.group(1)
+    region = re.sub(r"\\hphantom\{[^}]*\}", "", region)   # \hphantom{8} hides a STRAY digit -- drop it first.
+    region = re.sub(r"\\[a-zA-Z]+", "", region)           # then any other LaTeX command (\underline, ...).
+    nums = [int(x) for x in re.findall(r"-?\d+", region)]
+    if len(nums) != len(ops) + 1:
+        return None
+    maximize = bool(re.search(r"\b(highest|largest|greatest|maximum)\b", t, re.I))
+    vals = []
+    for perm in set(itertools.permutations(ops)):
+        expr = str(nums[0]) + "".join(o + str(n) for o, n in zip(perm, nums[1:]))
+        v = _safe_eval(expr)
+        if v is not None:
+            vals.append(v)
+    if not vals:
+        return None
+    target = max(vals) if maximize else min(vals)
+    letter = _match_value(q.options, target)
+    if letter:
+        return letter, f"{'max' if maximize else 'min'} of {ops} placed in {nums} = {target}"
+    return None
+
+
+def _solve_weekday(q: Question) -> tuple[str, str] | None:
+    """'On what day of the week will <Month> <Year> begin?' -> real calendar day-of-week of the 1st."""
+    t = q.text
+    if not re.search(r"day of (?:the )?week", t, re.I):
+        return None
+    if not re.search(r"\bbegin|\bstart|first day", t, re.I):
+        return None
+    # If the stem GIVES an anchor weekday ('... is a Monday'), the answer is RELATIVE -- abstain.
+    if re.search(r"\b(" + "|".join(_WEEKDAYS) + r")\b", t, re.I):
+        return None
+    ym = re.search(r"\b((?:19|20)\d{2})\b", t)
+    if not ym:
+        return None
+    year = int(ym.group(1))
+    month = None
+    for mo in re.finditer(r"\b(" + "|".join(_MONTHS) + r")\b", t, re.I):
+        month = _MONTHS[mo.group(1).lower()]   # the LAST month named is the one asked about.
+    if month is None:
+        return None
+    try:
+        wd = datetime.date(year, month, 1).strftime("%A")
+    except Exception:
+        return None
+    hits = [k for k, v in q.options.items() if wd.lower() in v.lower()]
+    if len(hits) == 1:
+        return hits[0], f"1/{month}/{year} is a {wd}"
+    return None
+
+
+def _solve_parallelogram_angle(q: Question) -> tuple[str, str] | None:
+    """'In parallelogram ABCD, angle B = X°, find angle C' -> opposite equal, adjacent supplementary."""
+    t = q.text
+    if "parallelogram" not in t.lower():
+        return None
+    name = re.search(r"parallelogram\s+\$?([A-Z]{4})\$?", t)
+    given = re.search(r"angle\s+\$?([A-Z])\$?\s+(?:measures?|is|equals?|=)\s*\$?(\d+)", t, re.I)
+    asked = re.search(r"(?:measure of|degrees? in[\s\S]{0,30}?)\s*angle\s+\$?([A-Z])\$?", t, re.I)
+    if not (name and given and asked):
+        return None
+    verts, (gl, gv), al = name.group(1), (given.group(1), int(given.group(2))), asked.group(1)
+    if gl not in verts or al not in verts:
+        return None
+    diff = abs(verts.index(gl) - verts.index(al)) % 4
+    val = gv if diff in (0, 2) else 180 - gv      # opposite (0/2) equal; adjacent (1/3) supplementary.
+    letter = _match_value(q.options, Fraction(val))
+    if letter:
+        return letter, f"parallelogram {verts}: angle {al} = {val} (angle {gl}={gv}, {'opposite' if diff in (0,2) else 'adjacent'})"
+    return None
+
+
 _SOLVERS = (
     _solve_finite_field_roots,
     _solve_ring_characteristic,
     _solve_gcd,
+    _solve_common_divisor_count,
+    _solve_subspace_intersection_dim,
     _solve_sum_product,
     _solve_reflection_yx,
     _solve_triangle_sides,
     _solve_percentage_increase,
+    _solve_operator_placement,
+    _solve_weekday,
+    _solve_parallelogram_angle,
     _solve_arith_expression,
 )
 
