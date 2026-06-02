@@ -310,9 +310,18 @@ _RETRIEVAL_NEWS_RE = re.compile(
 # ~3% the boost bought is not worth re-introducing the rate-limiting on a category already MAXED at level
 # 15. So Entertainment is back on the ON-DEMAND gate like the other knowledge races: it retrieves when the
 # question looks factual (cues / proper-noun density in `needs_retrieval`) and otherwise trusts the prior.
+#
+# Science and Nature ADDED 2026-06-02. Its questions are CONCEPTUAL ("Gel electrophoresis is most useful
+# for which application?", qid 5802) -- no factual-cue word, < 3 proper nouns -- so the on-demand gate
+# returned False on essentially EVERY Science turn (verified: needs_retrieval False with topic set OR unset)
+# and the bare 7B answered from a weak science prior, missing even level-0 questions. Forcing retrieval is
+# SAFE here (unlike the Entertainment 429 episode): the local simplewiki FAISS tier absorbs the bulk and
+# live Wikipedia fires only on the < 5% miss, so the shared-IP rate limit is not provoked. The retriever
+# routes Science to FAISS/Wikipedia (not web -- `_looks_like_news` needs "news" in the topic).
 _HIGH_RETRIEVAL_TOPICS: frozenset[str] = frozenset({
     "News",
     "Ancient History and Politics",
+    "Science and Nature",
 })
 
 # Capitalised words that are NOT named entities -- sentence openers, pronouns, articles, question
