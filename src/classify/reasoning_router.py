@@ -223,11 +223,22 @@ _FALLBACK_STRATEGY = "generic_cot"
 # and EVERYTHING ELSE (arithmetic, logic, concept/stats -> the fallback) stays on `cot_v2`. Minimal blast
 # radius, maximal targeting of the documented failure. Pair with max_new_tokens>=512 so the longer
 # structured chains reach their 'Answer:' line.
+# B3 (2026-06-02, the STRUCTURAL fix): only the TIME-interval shapes route to structured enumeration.
+# DISCRETE_ENUMERATION was REMOVED -> it falls back to cot_v2. Rationale: the discrete bucket is the
+# polluted one -- 'divisor' / 'subset' / 'factor' / 'distinct' / 'how-many-X' are shared vocabulary between
+# genuine combinatorics AND formula/number-theory (factor groups, GCDs, power sets, normal distributions),
+# and NO regex separates them. Every live truncation death was a non-counting question that leaked into the
+# enumerate-and-count scaffold and then ran LaTeX past the 300-token cap. cot_v2 NEVER truncates, so routing
+# the whole discrete bucket to it STRUCTURALLY ends the bleed (vs B1a/B1b/B2 cue-patching, which leaked a new
+# truncation every run). INTERVAL_COUNTING / TEMPORAL_REASONING need a clock/time signal -> genuinely
+# time-ordered, short, no LaTeX -> safe in structured, where the boundary check fixes the off-by-one. Cost:
+# genuine combinatorics loses the scaffold, but it is rare and cot_v2 handles it terse. This partly reverses
+# the OFFLINE 'discrete enumeration helped' finding -- but offline had no 30s-wall truncation. See
+# [[maths-live-routing-stack]] for the full evidence trail.
 MATHS_LIVE_POLICY: dict[ReasoningCategory, str] = {
     ReasoningCategory.INTERVAL_COUNTING: "structured_enumeration_cot",
     ReasoningCategory.TEMPORAL_REASONING: "structured_enumeration_cot",
-    ReasoningCategory.DISCRETE_ENUMERATION: "structured_enumeration_cot",
-    # arithmetic / logical / multi_hop / factual / commonsense -> the fallback (cot_v2), unchanged.
+    # DISCRETE_ENUMERATION + arithmetic / logical / multi_hop / factual / commonsense -> cot_v2 fallback.
 }
 MATHS_LIVE_FALLBACK = "cot_v2"
 
