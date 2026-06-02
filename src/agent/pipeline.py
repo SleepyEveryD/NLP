@@ -75,12 +75,20 @@ class QAPipeline:
         self_consistency_temperature: float = 0.7,
         latency_budget_s: float = 30.0,
         max_new_tokens: int | None = None,
+        solver=None,
     ):
         self.engine = engine
         self.prompt_builder = prompt_builder
         self.classifier = classifier
         self.retriever = retriever
         self.tools = tools
+        # A deterministic, type-specific MATHS solver: `solve_maths(question) -> (letter, evidence) | None`.
+        # When present (only pipeline_maths injects it) it runs BEFORE the LLM and, on a confident single-
+        # option hit for a computational type (finite-field roots, gcd, characteristic, sum/product,
+        # reflection, triangle, %), answers from it and SKIPS the model -- correct by construction there.
+        # It ABSTAINS (None) on every other type, so the LLM path is untouched: it can only ADD answers,
+        # never override the model on the knowledge/abstract subset (validated: 0 regressions on the logs).
+        self.solver = solver
         # The generation cap, optional it is. None (default) -> pass NOTHING to engine.generate, so the
         # engine's own default (256) stands -- EXACT current behaviour for every existing pipeline, no
         # change at all. Set it (e.g. 512) when a verbose strategy needs room to reach its 'Answer:' line:
@@ -137,6 +145,35 @@ class QAPipeline:
             with stopwatch(breakdown, "classify"):
                 if self.classifier:
                     question = self.classifier.classify(question)
+
+            # --- Stage: solver short-circuit (Maths) ---
+            # A deterministic type-specific solver, when injected, runs BEFORE the LLM. On a confident
+            # single-option hit (a type it solves correctly by construction) we answer from it and SKIP
+            # the model -- deterministic and instant. On abstain (None) the normal LLM path runs untouched.
+            if self.solver is not None:
+                with stopwatch(breakdown, "solver"):
+                    try:
+                        sol = self.solver(question)
+                    except Exception:
+                        sol = None
+                if sol is not None:
+                    letter, evidence = sol
+                    return Prediction(
+                        qid=question.qid,
+                        answer=letter,
+                        confidence=1.0,
+                        raw_output=f"[math_solver] {evidence}",
+                        model=getattr(self.engine, "name", ""),
+                        prompt_strategy=getattr(self.prompt_builder, "strategy", ""),
+                        retrieval_used=False,
+                        retrieved_doc_ids=[],
+                        retrieved_snippets=[],
+                        tool_used="math_solver",
+                        latency_s=guard.elapsed(),
+                        tokens_in=0,
+                        tokens_out=0,
+                        error=None,
+                    )
 
             # --- Stage: retrieve ---
             # Evidence, fetched only when a retriever exists AND retrieval needed it is.

@@ -76,10 +76,45 @@ _COUNT_RE = re.compile(
 )
 
 # A range / interval phrasing -- "between X and Y", "from X to Y", "every N minutes".
+# The "every N <unit>" branch accepts a SPELLED-OUT number too (every TWO seconds), not only digits:
+# the cyclic-coincidence counting questions ("red blinks every two seconds ... how many times do all
+# coincide") write the period in words, so the digit-only pattern missed them and they fell through to
+# commonsense -> cot_v2, which botched the inclusive off-by-one (live qid 6861, a recurring death).
 _RANGE_RE = re.compile(
     r"\bbetween\b[\s\S]*?\band\b"
     r"|\bfrom\b[\s\S]*?\bto\b"
-    r"|\bevery\s+\d+\s*-?\s*(?:minute|hour|second|day)",
+    r"|\bevery\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"\s*-?\s*(?:minute|hour|second|day)",
+    re.IGNORECASE,
+)
+
+# The GRE-style PAIRED True/False format ("Statement 1 | ... Statement 2 | ..."). These are CONCEPT
+# judgements -- often abstract algebra ('subset', 'factor group') -- NOT combinatorics; but those very
+# words trip the enumeration cue below, and the enumerate-then-count scaffold produces GARBAGE on a
+# True/False judgement (live qid 6768 wrote "Running total: 1"). Detected at TOP precedence and sent to
+# logical reasoning (-> cot_v2 under the live Maths policy). Both halves required -> never a false hit.
+_STATEMENT_TF_RE = re.compile(
+    r"\bstatement\s+1\b[\s\S]*\bstatement\s+2\b",
+    re.IGNORECASE,
+)
+
+# "Formula math" signals -- abstract algebra (factor/quotient groups) and inferential statistics (normal
+# distribution, z-scores, confidence intervals, standard deviation, variance). These are COMPUTED from a
+# formula, NOT list-and-counted -- yet a single word in them ('factor group', 'how many ... between X and
+# Y') trips the enumeration cue, and the enumerate-every-case scaffold then drives the small model into
+# long LaTeX that overruns the 300-token cap. Every such turn was a WINNABLE question lost to truncation
+# (live qids 6767 factor-group, 6954 normal-dist, 6830 / 7004 stats -- each one step from the answer when
+# the cap cut it off). Routed to cot_v2 instead they stay terse and FINISH (cot_v2 reliably suppresses
+# LaTeX -- every stats chain it produced stayed plain text). NARROW on purpose: bare 'factor' is NOT here
+# (so 'how many factors of 360' stays enumeration) and ring/field notation (Z_n) is NOT here (so the
+# find-all-zeros questions are untouched) -- only the two vocabularies that demonstrably LaTeX-truncate.
+_FORMULA_MATH_RE = re.compile(
+    r"\b(?:factor|quotient)\s+group"
+    r"|normal(?:ly)?\s+distribut"
+    r"|\bz-?scores?\b"
+    r"|confidence\s+(?:interval|level)"
+    r"|standard\s+deviation"
+    r"|\bvariance\b",
     re.IGNORECASE,
 )
 
@@ -188,11 +223,22 @@ _FALLBACK_STRATEGY = "generic_cot"
 # and EVERYTHING ELSE (arithmetic, logic, concept/stats -> the fallback) stays on `cot_v2`. Minimal blast
 # radius, maximal targeting of the documented failure. Pair with max_new_tokens>=512 so the longer
 # structured chains reach their 'Answer:' line.
+# B3 (2026-06-02, the STRUCTURAL fix): only the TIME-interval shapes route to structured enumeration.
+# DISCRETE_ENUMERATION was REMOVED -> it falls back to cot_v2. Rationale: the discrete bucket is the
+# polluted one -- 'divisor' / 'subset' / 'factor' / 'distinct' / 'how-many-X' are shared vocabulary between
+# genuine combinatorics AND formula/number-theory (factor groups, GCDs, power sets, normal distributions),
+# and NO regex separates them. Every live truncation death was a non-counting question that leaked into the
+# enumerate-and-count scaffold and then ran LaTeX past the 300-token cap. cot_v2 NEVER truncates, so routing
+# the whole discrete bucket to it STRUCTURALLY ends the bleed (vs B1a/B1b/B2 cue-patching, which leaked a new
+# truncation every run). INTERVAL_COUNTING / TEMPORAL_REASONING need a clock/time signal -> genuinely
+# time-ordered, short, no LaTeX -> safe in structured, where the boundary check fixes the off-by-one. Cost:
+# genuine combinatorics loses the scaffold, but it is rare and cot_v2 handles it terse. This partly reverses
+# the OFFLINE 'discrete enumeration helped' finding -- but offline had no 30s-wall truncation. See
+# [[maths-live-routing-stack]] for the full evidence trail.
 MATHS_LIVE_POLICY: dict[ReasoningCategory, str] = {
     ReasoningCategory.INTERVAL_COUNTING: "structured_enumeration_cot",
     ReasoningCategory.TEMPORAL_REASONING: "structured_enumeration_cot",
-    ReasoningCategory.DISCRETE_ENUMERATION: "structured_enumeration_cot",
-    # arithmetic / logical / multi_hop / factual / commonsense -> the fallback (cot_v2), unchanged.
+    # DISCRETE_ENUMERATION + arithmetic / logical / multi_hop / factual / commonsense -> cot_v2 fallback.
 }
 MATHS_LIVE_FALLBACK = "cot_v2"
 
@@ -212,6 +258,28 @@ class ReasoningClassifier:
         has_time_word = bool(_TIME_WORD_RE.search(text))
         has_count = bool(_COUNT_RE.search(text))
         has_range = bool(_RANGE_RE.search(text))
+
+        # 0. STATEMENT-PAIR True/False -- the GRE "Statement 1 | ... Statement 2 |" concept format.
+        #    HIGHEST precedence on purpose: 'subset' / 'factor (group)' / 'distinct' inside these would
+        #    otherwise hijack the enumeration cue, and the enumerate-and-count scaffold produces nonsense
+        #    on a True/False judgement. A clean two-statement validity check (-> cot_v2) is the right shape.
+        if _STATEMENT_TF_RE.search(text):
+            return ReasoningSignal(
+                ReasoningCategory.LOGICAL_REASONING,
+                "paired True/False statements (Statement 1 | ... Statement 2 |)",
+            )
+
+        # 0b. FORMULA MATH -- abstract algebra (factor/quotient groups) and inferential stats. These are
+        #     COMPUTED from a formula, not enumerated; but their vocabulary trips the enumeration cue and
+        #     the enumerate-and-count scaffold then runs long LaTeX past the 300-token cap -- a guaranteed
+        #     loss (live 6767/6954/6830/7004). Classify as ARITHMETIC -> cot_v2 (terse, no LaTeX, finishes).
+        #     NARROW: genuine combinatorics ('how many ways', divisors) and clock counting carry none of
+        #     these signals, so they still reach structured enumeration below.
+        if _FORMULA_MATH_RE.search(text):
+            return ReasoningSignal(
+                ReasoningCategory.ARITHMETIC,
+                "formula-math (factor/quotient group or inferential stats) -- compute, do not enumerate",
+            )
 
         # 1. INTERVAL_COUNTING -- counting over a CLOCK/time range (the chime question's exact shape).
         #    A count intent AND a clock/time signal AND a range, all three together it needs.

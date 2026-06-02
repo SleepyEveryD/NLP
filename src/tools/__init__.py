@@ -4,6 +4,7 @@ The tool registry the pipeline consumes, here it lives: a name -> callable map, 
 JSON-dispatch loop (D-013) finds and runs a tool the model asks for.
 """
 from .calculator import calculate
+from .math_solvers import solve_maths
 
 
 def default_tools() -> dict:
@@ -14,4 +15,4 @@ def default_tools() -> dict:
     return {"calculator": calculate}
 
 
-__all__ = ["calculate", "default_tools"]
+__all__ = ["calculate", "default_tools", "solve_maths"]

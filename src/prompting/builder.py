@@ -326,6 +326,14 @@ def _structured_enumeration_cot(question: Question, context: list[RetrievedDoc] 
     count, and a boundary check on the endpoints (off-by-one, the classic counting bug it is).
 
     For open questions, a brief free-text answer it keeps (enumeration suits options/counts, not prose).
+
+    The TRUNCATION fix (live Maths run, qids 6993 + 6830): both chains were on the CORRECT track --
+    6993 had found the two critical points, 6830 had the SE and both z-scores -- but each wrote ~6
+    paragraphs of LaTeX (\\(...\\), \\[...\\]) and hit the 300-token cap BEFORE the 'Answer:' line, so
+    the parser fell back to a blind guess (both LOST a winnable question). At ~16 tok/s the 300 cap ≈ the
+    25s wall (both ran 26-27s), so MORE tokens would only time out -- the cure is FEWER tokens to the
+    answer. The trailing "no LaTeX" line this prompt HAD was ignored; cot_v2's forceful, FRONT-LOADED
+    ban demonstrably suppresses LaTeX (every cot_v2 chain in that run was plain text), so port it here.
     """
     parts: list[str] = []
 
@@ -338,13 +346,16 @@ def _structured_enumeration_cot(question: Question, context: list[RetrievedDoc] 
     else:
         parts.append(_render_mcq(question.text, question.options))
         parts.append(
+            "Plain text ONLY -- NO LaTeX, no \\frac, no \\(...\\), no \\[...\\], no $...$; write "
+            "'mu'/'sigma' as words and keep EVERY line under ~12 words (LaTeX overruns the token "
+            "budget before the answer -- a guaranteed loss).\n"
             "Solve by EXPLICIT ENUMERATION -- do NOT guess a total.\n"
             "1. List EVERY relevant case/event/item ONE PER LINE, in order (chronological for times, "
             "ascending for numbers). Write the value beside each.\n"
             "2. Boundary check: state the first and last item that qualify, and confirm each endpoint "
             "is inside the asked range (watch the off-by-one).\n"
             "3. ONLY NOW add them up -- show the running total.\n"
-            "Then on a new line write 'Answer: X' (X = A, B, C, or D). Plain numbers only, no LaTeX."
+            "You MUST end on a new line with 'Answer: X' (X = A, B, C, or D) -- ALWAYS reach that line."
         )
 
     return "\n".join(parts)
