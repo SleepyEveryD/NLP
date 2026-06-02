@@ -15,19 +15,13 @@ import time
 
 import requests
 
+from retrieval._focus import focus as _focus_text
+from retrieval._focus import option_terms as _option_terms_of
 from schemas import Question, RetrievedDoc
 
 _API = "https://{lang}.wikipedia.org/w/api.php"
 # A descriptive User-Agent, Wikipedia asks for (a bare python-requests UA, sometimes blocked it is).
 _UA = "PoliMillionaire-NLP-Assignment/1.0 (educational; Politecnico di Milano NLP course)"
-
-# Words too generic to anchor a body window on -- option boilerplate / question scaffold, these are.
-_FOCUS_STOP: frozenset[str] = frozenset({
-    "the", "and", "for", "with", "that", "this", "from", "into", "their", "they",
-    "was", "were", "are", "his", "her", "its", "which", "what", "who", "when", "where",
-    "film", "films", "movie", "album", "song", "band", "show", "series", "none", "both",
-    "all", "above", "following", "other", "than", "more", "most", "first", "best",
-})
 
 
 class WikipediaRetriever:
@@ -54,7 +48,7 @@ class WikipediaRetriever:
         search_limit: int = 5,
         chars_focus: int = 1100,    # total kept per doc once focused (lead + answer-term windows).
         focus_window: int = 180,    # chars kept either side of an option-term / number match in the body.
-        deepen_top: int = 2,        # how many top pages to body-fetch+focus (the rest keep their intro).
+        deepen_top: int = 1,        # how many top pages to body-fetch+focus (the rest keep their intro).
     ):
         self.top_k = top_k
         self.lang = lang
@@ -129,60 +123,16 @@ class WikipediaRetriever:
         return ""
 
     def _option_terms(self, question: Question) -> list[str]:
-        """The DISTINCTIVE tokens of the options (proper-ish words >=4 chars + numbers) -- the body
-        windows we anchor on these. Generic scaffold words (`_FOCUS_STOP`) dropped they are."""
-        terms: set[str] = set()
-        for val in (question.options or {}).values():
-            s = str(val)
-            for num in re.findall(r"\d[\d.,/]*\d|\d", s):   # "0.7", "360", "1967", a bare "3".
-                terms.add(num)
-            for w in re.findall(r"[A-Za-z][A-Za-z\-]{3,}", s):
-                if w.lower() not in _FOCUS_STOP:
-                    terms.add(w)
-        return [t for t in terms if len(t) >= 2]
+        """Option-distinctive terms for body focusing -- the shared `_focus` module owns the logic."""
+        return _option_terms_of(question)
 
     def _focus(self, body: str, terms: list[str], lead: str) -> str:
-        """Full body -> lead + bounded windows around where the option terms/numbers appear.
-
-        The answer sentence often sits mid-article; keep the lead (topic anchor) plus a ~window around
-        each option-term hit, merge overlaps, dedupe against the lead, cap at `chars_focus`. No hit ->
-        the lead alone (the intro behaviour, preserved). RAW article text throughout (D-008)."""
-        body = re.sub(r"\s+", " ", body).strip()
-        lead_keep = lead.strip()[: self.chars_per_doc]
-        if not terms or not body:
-            return lead_keep or body[: self.chars_focus]
-
-        low = body.lower()
-        spans: list[tuple[int, int]] = []
-        for term in terms:
-            for m in re.finditer(re.escape(term.lower()), low):
-                spans.append((max(0, m.start() - self.focus_window),
-                              min(len(body), m.end() + self.focus_window)))
-        if not spans:
-            return lead_keep or body[: self.chars_focus]
-
-        spans.sort()
-        merged: list[list[int]] = []
-        for s, e in spans:
-            if merged and s <= merged[-1][1]:
-                merged[-1][1] = max(merged[-1][1], e)
-            else:
-                merged.append([s, e])
-
-        parts: list[str] = [lead_keep] if lead_keep else []
-        used = len(lead_keep)
-        lead_low = lead_keep.lower()
-        for s, e in merged:
-            if used >= self.chars_focus:
-                break
-            frag = body[s:e].strip()
-            if not frag or frag.lower() in lead_low:   # already covered by the lead.
-                continue
-            if used + len(frag) > self.chars_focus:
-                frag = frag[: max(0, self.chars_focus - used)]
-            parts.append("… " + frag)
-            used += len(frag)
-        return " ".join(parts)
+        """Lead + windows around the option terms -- delegates to the shared `_focus` module."""
+        return _focus_text(
+            body, terms, lead=lead,
+            chars_focus=self.chars_focus, focus_window=self.focus_window,
+            chars_lead=self.chars_per_doc,
+        )
 
     def _build_query(self, question: Question) -> str:
         # The question text, the query it is -- natural language Wikipedia search handles. Capped, it stays.
@@ -204,21 +154,27 @@ class WikipediaRetriever:
         return " ".join(dict.fromkeys(quoted + caps))[:300]
 
     def _get(self, params: dict) -> dict:
-        """One API GET, with a SINGLE short retry on 429 (rate limit) -- then give up, graceful we stay.
+        """One API GET, with UP TO 2 retries on 429 (rate limit) -- then give up, graceful we stay.
 
-        The 30s wall is real, so the back-off we cap (<=2s). Still 429? raise -> `retrieve` returns []
-        (no evidence, the model unaided answers). The sweep hammering Wikipedia, this softens.
+        On a shared Colab IP, forcing retrieval on EVERY question hammers Wikipedia and 429s land on ~half
+        the turns (live run 14: 47% returned empty, all at the ~4.4s single-retry-then-bail signature). A
+        single 2s retry is too impatient -- Wikipedia's `Retry-After` is often longer. So we honour
+        Retry-After (capped at 2.5s so the 30s wall stays safe) and retry up to twice: worst case ~5s of
+        back-off on this call, which converts most 429s into a real hit instead of empty evidence. Still
+        429 after the retries? raise -> `retrieve` returns [] (the model unaided answers).
         """
         url = _API.format(lang=self.lang)
-        r = self._session.get(url, params=params, timeout=self.timeout)
-        if r.status_code == 429:  # Too many requests -- a brief, capped wait, then ONE retry.
-            try:
-                wait = min(float(r.headers.get("Retry-After", "1") or 1), 2.0)
-            except ValueError:
-                wait = 1.0
-            time.sleep(wait)
+        r = None
+        for _attempt in range(3):  # the first try + up to 2 retries.
             r = self._session.get(url, params=params, timeout=self.timeout)
-        r.raise_for_status()
+            if r.status_code != 429:
+                break
+            try:
+                wait = min(float(r.headers.get("Retry-After", "1.5") or 1.5), 2.5)
+            except ValueError:
+                wait = 1.5
+            time.sleep(wait)
+        r.raise_for_status()  # non-429 error, or the last 429 -> raise -> retrieve() returns [].
         return r.json()
 
     def _search(self, query: str) -> list[str]:

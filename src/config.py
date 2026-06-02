@@ -27,6 +27,12 @@ class RetrievalConfig:
     top_k: int = 3
     embedder: str = "intfloat/multilingual-e5-small"
     index_path: Optional[str] = None
+    # A LOCAL BM25 index over the full-enwiki dump (built with retrieval.bm25_index). When set, knowledge
+    # questions hit it FIRST -- offline, millisecond, NO rate limit -- and only fall through to live
+    # Wikipedia when it returns nothing (post-cutoff / niche). This is the cure for the live-API 429s that
+    # killed ~half the Entertainment turns. None -> BM25 skipped, the old FAISS-or-Wikipedia path stands.
+    # Build it once (see retrieval.prepare_enwiki + retrieval.bm25_index) and point this at the index dir.
+    bm25_index_path: Optional[str] = None
     # Minimum FAISS cosine similarity to KEEP a corpus doc. 0.0 = off (every top_k doc passes, the
     # old behaviour). A floor (~0.72 for e5-small) drops off-topic matches -- the second line of
     # defence after the needs_retrieval gate, for when retrieval fires but the corpus has no real hit

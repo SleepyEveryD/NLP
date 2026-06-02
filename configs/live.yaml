@@ -29,6 +29,10 @@ retrieval:
   top_k: 3
   embedder: "intfloat/multilingual-e5-small"  # the FAISS path's encoder (e5; query/passage prefixes baked in).
   index_path: "data/corpus/simplewiki"        # build it: python -m retrieval.build_index (null -> Wikipedia fallback).
+  bm25_index_path: null                        # LOCAL full-enwiki BM25 (docs/enwiki_bm25.md). When set, knowledge
+                                               # questions hit it FIRST (offline, no 429) and fall back to live
+                                               # Wikipedia only on a miss. null -> off, the old path stands. Build
+                                               # once: prepare_enwiki -> bm25_index, then point this at the dir.
   min_score: 0.70               # FAISS cosine FLOOR: drop corpus docs below it (off-topic name-collisions, etc.).
                                 # CONSERVATIVE -- e5-small scores relevant passages ~0.80-0.88, clear noise <0.75,
                                 # so 0.70 trims only obvious garbage. Raise toward 0.78 if noise still lands; set

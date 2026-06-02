@@ -19,6 +19,10 @@ sentence-transformers>=3.0.0
 hnswlib>=0.8.0                 # The vector index the course uses (cosine), this is. Preferred over FAISS.
 faiss-cpu>=1.8.0              # Fallback vector store, this is.
 rank_bm25                     # Sparse BM25 for hybrid retrieval, optional it is.
+bm25s>=0.2.0                  # The scalable BM25 (scipy-sparse, disk save + mmap load) the LOCAL enwiki
+                              # index uses (retrieval.bm25_index). Query-time RAM stays small.
+wikiextractor                 # Cleans the raw enwiki XML dump -> plaintext JSON (the corpus build step).
+                              # Only needed OFFLINE when (re)building the local index, not at play time.
 
 # --- Utilities ---
 tqdm

@@ -8,6 +8,7 @@ All backends the RAW-evidence rule (D-008) honour -- raw chunks only, never a ge
 - `build_retriever`    -- a `RetrievalConfig` -> a wired `Retriever` (or None when disabled).
 """
 from .wikipedia import WikipediaRetriever
+from .bm25_retriever import BM25Retriever
 from .retriever import (
     FaissRetriever,
     Retriever,
@@ -17,8 +18,9 @@ from .retriever import (
 
 __all__ = [
     "WikipediaRetriever",
-    "WebSearchRetriever",
+    "BM25Retriever",
     "FaissRetriever",
     "Retriever",
+    "WebSearchRetriever",
     "build_retriever",
 ]
